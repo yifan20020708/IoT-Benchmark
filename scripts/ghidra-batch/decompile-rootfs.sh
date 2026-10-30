@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # decompile-rootfs - mirror-decompile every ELF binary of an unpacked filesystem.
 #
-# Usage:  decompile-rootfs [--jobs N] [--force] <rootfs-dir> <output-dir>
+# Usage:  decompile-rootfs [--jobs N] [--force] [--per-binary-timeout S] \
+#                            <rootfs-dir> <output-dir>
 #
 # Input:  an unpacked firmware filesystem (e.g. binwalk -e .../squashfs-root)
 # Output: <output-dir> mirrors <rootfs-dir>'s layout:
@@ -23,20 +24,28 @@
 # Resume:      a binary is skipped when its output dir already holds a
 #              completed run (.decompile-all.log containing "DecompileAll:
 #              ok="); --force decompiles everything again.
+# Per-binary budget: --per-binary-timeout S (default 3600, 0 = unlimited).
+#              Monster ELFs (e.g. an 18 MB C++ NVR app) can spend hours in
+#              Ghidra auto-analysis alone and would stall the whole batch as
+#              a straggler; the budget caps each binary so the run stays
+#              predictable. A timed-out binary is recorded as a normal
+#              [fail] entry (rerunnable later — resume skips only successes).
 #
 # Exit 0 = no failures (failures listed in <output-dir>/.failed.txt).
 set -u
 
 JOBS=8
 FORCE=0
+PER_BIN_TIMEOUT=3600
 while [ $# -gt 2 ]; do
     case "$1" in
-        --jobs)  JOBS="$2"; shift 2 ;;
-        --force) FORCE=1; shift ;;
-        *) echo "usage: decompile-rootfs [--jobs N] [--force] <rootfs-dir> <output-dir>" >&2; exit 2 ;;
+        --jobs)                JOBS="$2"; shift 2 ;;
+        --force)               FORCE=1; shift ;;
+        --per-binary-timeout)  PER_BIN_TIMEOUT="$2"; shift 2 ;;
+        *) echo "usage: decompile-rootfs [--jobs N] [--force] [--per-binary-timeout S] <rootfs-dir> <output-dir>" >&2; exit 2 ;;
     esac
 done
-ROOTFS="${1:?usage: decompile-rootfs [--jobs N] [--force] <rootfs-dir> <output-dir>}"
+ROOTFS="${1:?usage: decompile-rootfs [--jobs N] [--force] [--per-binary-timeout S] <rootfs-dir> <output-dir>}"
 OUT="${2:?missing output-dir}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -123,7 +132,26 @@ run_one() {
         echo "[skip] $rel"
         return 0
     fi
-    "$SCRIPT_DIR/decompile-all.sh" "$in" "$out" >/dev/null 2>&1
+    if [ "$PER_BIN_TIMEOUT" -gt 0 ]; then
+        # bounded run: decompile-all.sh under its own session, and the whole
+        # process GROUP (java included — GNU timeout only kills the direct
+        # child) gets TERM -> grace -> KILL when the budget expires
+        setsid "$SCRIPT_DIR/decompile-all.sh" "$in" "$out" >/dev/null 2>&1 &
+        local jpid=$!
+        local t0=$(date +%s)
+        while kill -0 "$jpid" 2>/dev/null; do
+            sleep 5
+            if [ $(( $(date +%s) - t0 )) -ge "$PER_BIN_TIMEOUT" ]; then
+                kill -TERM -- "-$jpid" 2>/dev/null
+                sleep 20
+                kill -KILL -- "-$jpid" 2>/dev/null
+                break
+            fi
+        done
+        wait "$jpid" 2>/dev/null
+    else
+        "$SCRIPT_DIR/decompile-all.sh" "$in" "$out" >/dev/null 2>&1
+    fi
     if [ -f "$out/.decompile-all.log" ] && grep -q 'DecompileAll: ok=' "$out/.decompile-all.log"; then
         echo "[ ok ] $rel"
     else
@@ -132,7 +160,7 @@ run_one() {
     fi
 }
 export -f run_one
-export ROOTFS OUT SCRIPT_DIR FORCE
+export ROOTFS OUT SCRIPT_DIR FORCE PER_BIN_TIMEOUT
 
 xargs -0 -r -P "$JOBS" -n 1 bash -c 'run_one "$1"' _ < "$JOBFILE" || true
 

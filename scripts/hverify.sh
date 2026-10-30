@@ -5,7 +5,8 @@
 # result/web/ping files, no task.yaml: those are the agent's claims, not
 # evidence. Instead this script re-boots the firmware from a clean process
 # state using the pre-rendered scratch/<iid>/run.sh and checks the web
-# service with plain curl. Ground truth = live QEMU + HTTP 200 + a real page.
+# service with plain curl (redirects followed — see the criterion note in
+# the poll loop). Ground truth = live QEMU + HTTP 200 + a real page.
 #
 # Exit 0 = verified; exit 1 = not verified (reason in harness_reason).
 # Writes /work/output/{harness_result,harness_time_to_web,harness_ip,
@@ -81,8 +82,13 @@ while :; do
     if [ "$elapsed" -ge "$GRACE" ] && ! qemu_alive; then
         fail "qemu-died (boot log: $(tail -1 /tmp/hverify-boot.log 2>/dev/null))"
     fi
-    code=$(curl -s -o /tmp/hverify-page.html -w '%{http_code}' \
-                --max-time 5 "http://$IP/" 2>/dev/null)
+    # Redirects are followed: a vendor admin UI 302-ing / to its login page
+    # is a healthy web service (nearly every router/NVR does this), and the
+    # OLD plain-/-must-200 criterion pushed agents into binary-patching the
+    # GUEST web server instead of emulating it faithfully. Redirect loops
+    # and dead redirect targets still fail naturally (curl error -> 000).
+    code=$(curl -sL --max-redirs 5 -o /tmp/hverify-page.html -w '%{http_code}' \
+                --max-time 8 "http://$IP/" 2>/dev/null)
     if [ "$code" = "200" ]; then
         size=$(wc -c < /tmp/hverify-page.html)
         if [ "$size" -le 100 ]; then
