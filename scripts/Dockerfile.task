@@ -1,9 +1,9 @@
 # agent-scan :: task image template (dataset layout)
 #
-# Build context = a STAGING directory prepared by scripts/agent-run.sh that
-# contains exactly two files: task.json and the firmware binary. The driver
-# stages them from data/firmware/<vendor>/<model>/, so no stray files
-# (result.json, output/, older firmwares) ever enter the image.
+# Build context = a STAGING directory prepared by scripts/agent-run.sh from
+# data/firmware/<vendor>/<model>/, holding exactly: task.json, the firmware
+# binary, rootfs/, decompiled-rootfs/ — so no stray files (result.json,
+# output/, older firmwares) ever enter the image.
 #
 #   docker build -f scripts/Dockerfile.task \
 #       --build-arg BRAND=<brand> \
@@ -12,8 +12,14 @@
 #       -t task-<task-id>:raw <staging-dir>
 #
 # The container is the agent's world: engine source (git-managed, patchable),
-# firmware + task.json in /work, and nothing else. Dockerfiles / .env / host
-# infra are deliberately absent — the agent cannot touch them.
+# the task itself (firmware + task.json) in /work, and the agent's activity
+# directory /home:
+#   /home/rootfs/            extracted firmware root filesystem (analysis)
+#   /home/decompiled-rootfs/ Ghidra pseudocode, mirrored layout
+#   /home/scripts/           verification scripts (placeholder for now)
+#   /home/workspace/         the agent's working directory
+# Dockerfiles / .env / host infra are deliberately absent — the agent cannot
+# touch them.
 #
 # NOTE: FIRMWARE filenames must not contain whitespace (Dockerfile ENV has
 # no quoting layer). agent-run.sh rejects such names up front.
@@ -24,7 +30,11 @@ ARG BRAND
 ARG FIRMWARE
 ARG TASK_NAME=task
 
-COPY . /work/
+COPY task.json ${FIRMWARE} /work/
+COPY rootfs/ /home/rootfs/
+COPY decompiled-rootfs/ /home/decompiled-rootfs/
+
+RUN mkdir -p /home/scripts /home/workspace
 
 ENV BRAND=${BRAND} \
     FIRMWARE=/work/${FIRMWARE} \

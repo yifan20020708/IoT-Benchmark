@@ -12,7 +12,9 @@
 #                 already serve the web interface, the harness decides.
 #
 # I/O contract
-#   INPUT  : <fw>/task.json, <fw>/<firmware>, $ROOT/.env (LLM credentials),
+#   INPUT  : <fw>/task.json, <fw>/<firmware>, <fw>/rootfs/ (required),
+#            <fw>/decompiled-rootfs/ (optional — empty placeholder if absent),
+#            $ROOT/.env (LLM credentials),
 #            scripts/{agent-prompt.md,hverify.sh,emu.sh,emu-shell.sh,
 #            Dockerfile.task}, image firmae-base:latest
 #   OUTPUT : <fw>/result.json  — the driver's own verdict (never written by
@@ -86,10 +88,21 @@ echo "[*] task=$TASK_ID brand=$BRAND firmware=$FWFILE timeout=${TIMEOUT}s"
 rm -rf "$OUTDIR"; mkdir -p "$OUTDIR"
 
 # build the task image from a clean staging context
+#    The full model folder rides along: firmware + task.json land in /work
+#    (the task itself), while rootfs/ + decompiled-rootfs/ land in /home —
+#    the agent's analysis assets, alongside the scripts/ and workspace/
+#    placeholders. Device nodes survive both cp and COPY intact.
 STAGE=$(mktemp -d /tmp/agent-scan-stage.XXXXXX)
 trap 'rm -rf "$STAGE"' EXIT
+[ -d "$FWDIR/rootfs" ] || { echo "[-] missing $FWDIR/rootfs (dataset contract: firmware + task.json + rootfs/ + decompiled-rootfs/)" >&2; exit 1; }
 cp "$FWDIR/task.json" "$STAGE/"
 cp "$FWDIR/$FWFILE" "$STAGE/"
+cp -a "$FWDIR/rootfs" "$STAGE/rootfs"
+if [ -d "$FWDIR/decompiled-rootfs" ]; then
+    cp -a "$FWDIR/decompiled-rootfs" "$STAGE/decompiled-rootfs"
+else
+    mkdir "$STAGE/decompiled-rootfs"   # optional asset: empty placeholder
+fi
 docker build -f "$ROOT/scripts/Dockerfile.task" \
     --build-arg BRAND="$BRAND" \
     --build-arg FIRMWARE="$FWFILE" \
