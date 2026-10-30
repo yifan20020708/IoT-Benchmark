@@ -1,0 +1,9 @@
+# Base image build context: deps/FirmAE-pro (minus .git) + scripts/
+# (Dockerfile.base COPYs the entrypoint helpers from scripts/)
+**
+!deps/
+!deps/FirmAE-pro/
+!deps/FirmAE-pro/**
+deps/FirmAE-pro/.git/**
+!scripts/
+!scripts/**

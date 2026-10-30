@@ -1,0 +1,34 @@
+# agent-scan :: task image template (dataset layout)
+#
+# Build context = a STAGING directory prepared by scripts/agent-run.sh that
+# contains exactly two files: task.json and the firmware binary. The driver
+# stages them from data/firmware/<vendor>/<model>/, so no stray files
+# (result.json, output/, older firmwares) ever enter the image.
+#
+#   docker build -f scripts/Dockerfile.task \
+#       --build-arg BRAND=<brand> \
+#       --build-arg FIRMWARE=<filename> \
+#       --build-arg TASK_NAME=<task-id> \
+#       -t task-<task-id>:raw <staging-dir>
+#
+# The container is the agent's world: engine source (git-managed, patchable),
+# firmware + task.json in /work, and nothing else. Dockerfiles / .env / host
+# infra are deliberately absent — the agent cannot touch them.
+#
+# NOTE: FIRMWARE filenames must not contain whitespace (Dockerfile ENV has
+# no quoting layer). agent-run.sh rejects such names up front.
+
+FROM firmae-base:latest
+
+ARG BRAND
+ARG FIRMWARE
+ARG TASK_NAME=task
+
+COPY . /work/
+
+ENV BRAND=${BRAND} \
+    FIRMWARE=/work/${FIRMWARE} \
+    TASK_NAME=${TASK_NAME}
+
+# Inherited entrypoint starts PostgreSQL and keeps the container alive;
+# the driver (scripts/agent-run.sh) execs `claude -p` inside.

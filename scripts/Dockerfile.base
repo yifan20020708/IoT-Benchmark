@@ -1,0 +1,165 @@
+# agent-scan :: firmae-base
+#
+# Self-contained FirmAE-pro runtime: all dependencies + full source (COPY, not
+# mounted) + a baked, schema-initialized PostgreSQL.
+#
+# Build context: repository root (see .dockerignore — only deps/FirmAE-pro
+# is included, .git excluded).
+#
+# Runtime contract (task containers inherit this):
+#   * entrypoint starts PostgreSQL on 127.0.0.1 (user firmadyne / db firmware,
+#     schema imported at build time, trust auth for local TCP)
+#   * no FIRMAE_DOCKER env var set  ->  firmae.config resolves
+#     PSQL_IP=127.0.0.1 and FIRMAE_DIR=$(pwd)  ->  run scripts from /opt/FirmAE-pro
+#   * default command keeps the container alive as an agent workspace:
+#       docker exec <ctr> emu-check          # one-shot pipeline run (run.sh -c)
+#
+# binwalk note (do not "simplify" this):
+#   * FirmAE-pro's extractor needs BOTH of these at once:
+#       - `import binwalk` + `binwalk.scan(...)` (v2-style python API, used for
+#         kernel detection / signature scan)  -> real binwalk v2.3.4 module,
+#         installed below via setup.py (python 3.8 compatible!)
+#       - CLI `binwalk -M -e -d <dir> <fw>` (v3 flags, `-d` = output dir)
+#         -> the Rust v3 binary; `-d` only exists in master, so we pin
+#            master @ 2671397. v3.1.0 still used -C.
+#   * The pip package `binwalk3` (v2-API wrapper) does NOT work here: it needs
+#     python >= 3.9 (`list[...]` generics), we are on 20.04 / python 3.8.
+#   * setup.py installs its own v2 CLI script to /usr/local/bin/binwalk —
+#     the Rust binary is staged at /usr/bin/binwalk-v3 BEFORE setup.py runs
+#     and restored as /usr/local/bin/binwalk afterwards, so the final CLI is
+#     v3 while the python module stays v2.4.3.
+#   * v2.3.4's deps.sh is still run: it builds sasquatch and other extraction
+#     helpers that the pipeline needs.
+#   * binwalk v3 shells out to `7zz` (official 7-Zip CLI) for zip archives;
+#     ubuntu 20.04 only ships p7zip's `7z`. We symlink 7zz -> 7z — argument
+#     syntax (x -y -o. -p'') is compatible; verified against DIR-868L.
+
+FROM ubuntu:20.04
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LC_ALL=C.UTF-8
+
+# ---------------------------------------------------------------------------
+# 1. system packages (mirrors deps/FirmAE-pro/install.sh)
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      apt-utils ca-certificates curl wget tar git bc psmisc ruby telnet file sudo \
+      socat net-tools iputils-ping iptables iproute2 \
+      python3 python3-pip python3-dev libpq-dev \
+      postgresql postgresql-client \
+      busybox-static bash-static fakeroot dmsetup kpartx netcat-openbsd nmap \
+      python3-psycopg2 snmp uml-utilities util-linux vlan \
+      mtd-utils gzip bzip2 arj lhasa p7zip p7zip-full cabextract fusecram cramfsswap \
+      squashfs-tools sleuthkit cpio lzop lzma srecord zlib1g-dev liblzma-dev liblzo2-dev \
+      unzip python3-magic unrar openjdk-8-jdk default-jdk \
+      qemu-system-arm qemu-system-aarch64 qemu-system-mips qemu-system-x86 qemu-utils \
+      build-essential pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# 2. binwalk v3 (Rust) — pinned master commit, installed as binwalk + binwalk3
+# ---------------------------------------------------------------------------
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal \
+    && . "$HOME/.cargo/env" \
+    && git clone https://github.com/ReFirmLabs/binwalk.git /tmp/binwalk-src \
+    && cd /tmp/binwalk-src \
+    && git checkout 26713972e3f9f52dc37d4a421c4554b0bd9e82ef \
+    && cargo build --release \
+    && install -m 755 target/release/binwalk /usr/local/bin/binwalk \
+    && ln -sf /usr/local/bin/binwalk /usr/local/bin/binwalk3 \
+    && rm -rf /tmp/binwalk-src "$HOME/.cargo" "$HOME/.rustup"
+
+# ---------------------------------------------------------------------------
+# 3. python deps (no pip binwalk3 — needs py>=3.9, we are on 3.8) +
+#    binwalk v2.3.4 python module + extraction helpers (sasquatch...)
+# ---------------------------------------------------------------------------
+RUN pip3 install --no-cache-dir \
+      psycopg2 psycopg2-binary coloredlogs \
+      jefferson python-lzo cstruct ubi_reader
+
+RUN apt-get update \
+    && cp /usr/local/bin/binwalk /usr/bin/binwalk-v3 \
+    && wget -q https://github.com/ReFirmLabs/binwalk/archive/refs/tags/v2.3.4.tar.gz \
+    && tar -xf v2.3.4.tar.gz \
+    && cd binwalk-2.3.4 \
+    && sed -i 's/^install_ubireader//g' deps.sh \
+    && sed -i 's/^REQUIRED_UTILS="wget tar python"/REQUIRED_UTILS="wget tar python3"/g' deps.sh \
+    && echo y | ./deps.sh \
+    && python3 setup.py install \
+    && install -m 755 /usr/bin/binwalk-v3 /usr/local/bin/binwalk \
+    && ln -sf /usr/local/bin/binwalk /usr/local/bin/binwalk3 \
+    && ln -sf /usr/bin/7z /usr/local/bin/7zz \
+    && rm -f /usr/bin/binwalk-v3 \
+    && python3 -c "import binwalk; assert hasattr(binwalk, 'scan'); print('binwalk v2 module ok')" \
+    && /usr/local/bin/binwalk --version 2>&1 | head -1 \
+    && cd / \
+    && rm -rf /binwalk-2.3.4 /v2.3.4.tar.gz \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# 4. FirmAE-pro source — baked into the image (COPY, not a mount)
+# ---------------------------------------------------------------------------
+COPY deps/FirmAE-pro /opt/FirmAE-pro
+
+# extractor needs this StuffIt helper on PATH
+RUN install -m 755 /opt/FirmAE-pro/core/unstuff /usr/local/bin/unstuff
+
+# ---------------------------------------------------------------------------
+# 5. helper scripts
+# ---------------------------------------------------------------------------
+COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY scripts/emu-check.sh /usr/local/bin/emu-check
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/emu-check
+
+# ---------------------------------------------------------------------------
+# 6. bake an initialized PostgreSQL (firmadyne user, firmware db, schema)
+#    local TCP uses trust auth so no password handling is needed at runtime
+# ---------------------------------------------------------------------------
+RUN service postgresql start \
+    && su postgres -c 'psql -c "CREATE USER firmadyne WITH PASSWORD '"'"'firmadyne'"'"';"' \
+    && su postgres -c 'createdb -O firmadyne firmware' \
+    && su postgres -c 'psql -d firmware -f /opt/FirmAE-pro/database/schema' \
+    && HBA="$(su postgres -c 'psql -tAc "SHOW hba_file;"')" \
+    && printf 'host all all 127.0.0.1/32 trust\nhost all all ::1/128 trust\n' >> "$HBA" \
+    && service postgresql stop
+
+# ---------------------------------------------------------------------------
+# 7. agent runtime: Node.js 20 + pinned Claude Code CLI
+# ---------------------------------------------------------------------------
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g @anthropic-ai/claude-code@2.1.309 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# 8. version the engine source: /opt/FirmAE-pro becomes a git repo with a
+#    pristine baseline commit. The agent edits source freely; the harness
+#    exports `git diff <pristine>` as the task's patch files. The repo
+#    boundary also *enforces* the agent's scope: only engine changes can
+#    ever land in a patch (infra files are not present in the container).
+# ---------------------------------------------------------------------------
+RUN git config --global user.email "agent-scan@localhost" \
+    && git config --global user.name "agent-scan" \
+    && git config --global --add safe.directory /opt/FirmAE-pro \
+    && cd /opt/FirmAE-pro \
+    && git init -q \
+    && git add -A \
+    && git commit -q -m "pristine FirmAE-pro baseline" \
+    && git rev-parse HEAD > /opt/.firmae_pristine_sha
+
+# agent task prompt (English) — baked here; agent-emulate.sh docker-cp's a
+# fresh copy over it at run time so prompt iterations don't need rebuilds
+COPY scripts/agent-prompt.md /opt/agent-prompt.md
+
+# ---------------------------------------------------------------------------
+# 9. runtime defaults
+# ---------------------------------------------------------------------------
+# firmae.config's generated QEMU commands use `sudo tunctl ... -u ${USER}`
+ENV USER=root
+ENV FIRMAE_HOME=/opt/FirmAE-pro
+WORKDIR /opt/FirmAE-pro
+
+VOLUME ["/sys/fs/cgroup"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+# no default args -> entrypoint keeps container alive (agent workspace);
+# run the pipeline with: docker exec <ctr> emu-check
+CMD []

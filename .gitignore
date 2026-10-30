@@ -1,0 +1,11 @@
+# secrets / runtime injection
+.env
+
+data/
+deps/
+.claude/
+.qoder/
+
+# large emulation artifacts
+*.tar.gz
+*.image
