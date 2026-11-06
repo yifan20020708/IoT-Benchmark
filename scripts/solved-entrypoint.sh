@@ -27,8 +27,11 @@ done
 pg_isready -q -h 127.0.0.1 || { echo "[solved] PostgreSQL failed to start"; exit 1; }
 
 # 2. the verified emulation = latest scratch dir
+#    IP may live in `ip` or `ip.0`/`ip.1`... (makeNetwork's numbered spelling
+#    for multi-interface devices) — try both spellings, first hit wins
 IID=$(ls "$FIRMAE/scratch" | grep -E '^[0-9]+$' | sort -n | tail -1)
-IP=$(cat "$FIRMAE/scratch/$IID/ip" 2>/dev/null || echo "?")
+IP=$( { cat "$FIRMAE/scratch/$IID/ip" "$FIRMAE/scratch/$IID"/ip.[0-9]* 2>/dev/null; } | head -1)
+IP=${IP:-?}
 echo "[solved] booting iid=$IID — web service expected at http://$IP/ within ~2min"
 
 # 3. defensive cleanup: a previous boot killed mid-flight may have left a

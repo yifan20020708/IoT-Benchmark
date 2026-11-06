@@ -16,13 +16,15 @@
 #            <fw>/decompiled-rootfs/ (optional — empty placeholder if absent),
 #            $ROOT/.env (LLM credentials),
 #            scripts/{agent-prompt.md,hverify.sh,emu.sh,emu-shell.sh,
-#            Dockerfile.task}, image firmae-base:latest
+#            solved-entrypoint.sh,Dockerfile.task}, image firmae-base:latest
 #   OUTPUT : <fw>/result.json  — the driver's own verdict (never written by
 #            the agent): status = success | fail | agent_timeout |
 #            agent_error | infra_error, timestamps, agent/harness details
 #            <fw>/output/      — agent-fixes.patch, agent-updated task.json,
 #            harness_* verdict files, agent terminal log
 #   EXIT   : 0 = harness-verified success; 1 = anything else
+#   NEXT   : on success, promote the kept container with
+#            scripts/commit-solved.sh <fw-folder>  -> task-<id>:solved
 #
 # The agent never sees Dockerfiles / .env / host infra; its write scope is
 # enforced by the git repo boundary at /opt/FirmAE-pro.
@@ -64,6 +66,17 @@ EOF
 # validate inputs, derive names
 [ -f "$FWDIR/task.json" ] || { echo "[-] missing task.json in $FWDIR" >&2; exit 1; }
 [ -f "$ENV_FILE" ] || { echo "[-] missing $ENV_FILE (create it from your bashrc)" >&2; exit 1; }
+
+# Serialize whole runs host-wide: every task container mounts the host's
+# /dev, and loop devices are kernel-global. Two concurrent agents sabotage
+# each other — an `losetup -D` cleanup in one container rips the loop out
+# from under the other's makeImage ("loop in use" -> endless retries;
+# observed live: two parallel runs both failed, one with 0 patch lines).
+# The lock queues, it does not reject — waiting is correct because the
+# second run needs the SAME shared resource, not a quick check.
+LOCK=/tmp/agent-scan-agent-run.lock
+exec 9>"$LOCK"
+flock -n 9 || { echo "[*] another agent-run holds the shared /dev loop pool — waiting for it to finish..."; flock 9; }
 
 # parse task.json (python3: robust JSON, no quote/space pitfalls like awk)
 read -r BRAND FWFILE < <(python3 -c '
@@ -126,13 +139,14 @@ docker exec "$CONTAINER" pg_isready -q -h 127.0.0.1 || write_early_result "postg
 
 # ship the prompt + the verification script (agent self-check uses the
 #    exact same deterministic criteria the harness will apply in step 5)
-# emu/emu-shell ride along so a later `docker commit` of this container
-#    bakes the agent-controllable lab entrypoint into the solved image
+# emu/emu-shell/solved-entrypoint ride along so a later commit-solved.sh of
+#    this container bakes the runtime entrypoints into the solved image
 docker cp "$ROOT/scripts/agent-prompt.md" "$CONTAINER:/opt/agent-prompt.md"
 docker cp "$ROOT/scripts/hverify.sh" "$CONTAINER:/usr/local/bin/hverify"
 docker cp "$ROOT/scripts/emu.sh" "$CONTAINER:/usr/local/bin/emu"
 docker cp "$ROOT/scripts/emu-shell.sh" "$CONTAINER:/usr/local/bin/emu-shell"
-docker exec "$CONTAINER" chmod +x /usr/local/bin/hverify /usr/local/bin/emu /usr/local/bin/emu-shell
+docker cp "$ROOT/scripts/solved-entrypoint.sh" "$CONTAINER:/usr/local/bin/solved-entrypoint"
+docker exec "$CONTAINER" chmod +x /usr/local/bin/hverify /usr/local/bin/emu /usr/local/bin/emu-shell /usr/local/bin/solved-entrypoint
 
 # run the agent under a wall-clock timeout
 #    The kill must run INSIDE the container (killing the docker-exec client

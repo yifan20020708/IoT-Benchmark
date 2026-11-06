@@ -54,12 +54,22 @@ fail() {
 
 IID=$(ls "$FIRMAE/scratch" 2>/dev/null | grep -E '^[0-9]+$' | sort -n | tail -1)
 [ -n "$IID" ] || fail "no-scratch-dir"
-IP=$(cat "$FIRMAE/scratch/$IID/ip" 2>/dev/null)
-[ -n "$IP" ] || fail "no-ip-for-iid-$IID"
+# candidate IPs, both spellings: inferNetwork writes plain `ip`, but
+# makeNetwork writes `ip.0`, `ip.1`, ... when the LAN/web sits on a numbered
+# interface (observed on W30E: emulation healthy, harness aborted at the
+# lookup without ever booting). The web service may answer on any interface,
+# so every candidate is polled and the answering one is recorded.
+IPS=()
+_ipfile() { local v; v=$(cat "$1" 2>/dev/null); [ -n "$v" ] && IPS+=("$v"); return 0; }
+_ipfile "$FIRMAE/scratch/$IID/ip"
+for f in "$FIRMAE/scratch/$IID"/ip.[0-9]*; do
+    [ -f "$f" ] && _ipfile "$f"
+done
+[ ${#IPS[@]} -gt 0 ] || fail "no-ip-for-iid-$IID"
 [ -f "$FIRMAE/scratch/$IID/run.sh" ] || fail "no-run-sh"
 [ -f "$FIRMAE/scratch/$IID/image.raw" ] || fail "no-image-raw"
 
-echo "harness: verifying iid=$IID ip=$IP (budget ${BUDGET}s)"
+echo "harness: verifying iid=$IID ip=${IPS[*]} (budget ${BUDGET}s)"
 
 # clean slate: the agent may have left anything running behind.
 # A stale QEMU would hold the tap/IP and mask a broken final state.
@@ -82,25 +92,28 @@ while :; do
     if [ "$elapsed" -ge "$GRACE" ] && ! qemu_alive; then
         fail "qemu-died (boot log: $(tail -1 /tmp/hverify-boot.log 2>/dev/null))"
     fi
+    # poll every candidate IP — the service answers on one of them.
     # Redirects are followed: a vendor admin UI 302-ing / to its login page
-    # is a healthy web service (nearly every router/NVR does this), and the
-    # OLD plain-/-must-200 criterion pushed agents into binary-patching the
+    # is a healthy web service (nearly every router/NVR does this); the OLD
+    # plain-/-must-200 criterion pushed agents into binary-patching the
     # GUEST web server instead of emulating it faithfully. Redirect loops
     # and dead redirect targets still fail naturally (curl error -> 000).
-    code=$(curl -sL --max-redirs 5 -o /tmp/hverify-page.html -w '%{http_code}' \
-                --max-time 8 "http://$IP/" 2>/dev/null)
-    if [ "$code" = "200" ]; then
-        size=$(wc -c < /tmp/hverify-page.html)
-        if [ "$size" -le 100 ]; then
-            fail "tiny-page-${size}B"
+    for IP in ${IPS[@]+"${IPS[@]}"}; do
+        code=$(curl -sL --max-redirs 5 -o /tmp/hverify-page.html -w '%{http_code}' \
+                    --max-time 8 "http://$IP/" 2>/dev/null)
+        if [ "$code" = "200" ]; then
+            size=$(wc -c < /tmp/hverify-page.html)
+            if [ "$size" -le 100 ]; then
+                fail "tiny-page-${size}B"
+            fi
+            echo true    > "$OUT/harness_result"
+            echo "$elapsed" > "$OUT/harness_time_to_web"
+            echo "$IP"    > "$OUT/harness_ip"
+            echo "$size"  > "$OUT/harness_http_size"
+            echo "harness: PASS — HTTP 200, ${size}B from http://$IP/ after ${elapsed}s"
+            # leave a clean, committable container behind (no running QEMU)
+            stop_qemu
+            exit 0
         fi
-        echo true    > "$OUT/harness_result"
-        echo "$elapsed" > "$OUT/harness_time_to_web"
-        echo "$IP"    > "$OUT/harness_ip"
-        echo "$size"  > "$OUT/harness_http_size"
-        echo "harness: PASS — HTTP 200, ${size}B from http://$IP/ after ${elapsed}s"
-        # leave a clean, committable container behind (no running QEMU)
-        stop_qemu
-        exit 0
-    fi
+    done
 done
