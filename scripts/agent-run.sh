@@ -16,7 +16,8 @@
 #            <fw>/decompiled-rootfs/ (optional — empty placeholder if absent),
 #            $ROOT/.env (LLM credentials),
 #            scripts/{agent-prompt.md,hverify.sh,emu.sh,emu-shell.sh,
-#            solved-entrypoint.sh,Dockerfile.task}, image firmae-base:latest
+#            solved-entrypoint.sh,loop-shim/{losetup.sh,kpartx.sh},
+#            Dockerfile.task}, image firmae-base:latest
 #   OUTPUT : <fw>/result.json  — the driver's own verdict (never written by
 #            the agent): status = success | fail | agent_timeout |
 #            agent_error | infra_error, timestamps, agent/harness details
@@ -25,6 +26,11 @@
 #   EXIT   : 0 = harness-verified success; 1 = anything else
 #   NEXT   : on success, promote the kept container with
 #            scripts/commit-solved.sh <fw-folder>  -> task-<id>:solved
+#   PARALLEL: different tasks may run concurrently — the loop-shim installed
+#            into every task container isolates the kernel-global loop pool
+#            (scripts/loop-shim/losetup.sh header). Same task folder:
+#            refused by a per-task lock. If the shim install fails, runs
+#            serialize host-wide instead (correct but slow).
 #
 # The agent never sees Dockerfiles / .env / host infra; its write scope is
 # enforced by the git repo boundary at /opt/FirmAE-pro.
@@ -67,16 +73,13 @@ EOF
 [ -f "$FWDIR/task.json" ] || { echo "[-] missing task.json in $FWDIR" >&2; exit 1; }
 [ -f "$ENV_FILE" ] || { echo "[-] missing $ENV_FILE (create it from your bashrc)" >&2; exit 1; }
 
-# Serialize whole runs host-wide: every task container mounts the host's
-# /dev, and loop devices are kernel-global. Two concurrent agents sabotage
-# each other — an `losetup -D` cleanup in one container rips the loop out
-# from under the other's makeImage ("loop in use" -> endless retries;
-# observed live: two parallel runs both failed, one with 0 patch lines).
-# The lock queues, it does not reject — waiting is correct because the
-# second run needs the SAME shared resource, not a quick check.
-LOCK=/tmp/agent-scan-agent-run.lock
-exec 9>"$LOCK"
-flock -n 9 || { echo "[*] another agent-run holds the shared /dev loop pool — waiting for it to finish..."; flock 9; }
+# Loop-pool strategy: the per-task lock below only guards against two runs
+# of the SAME task folder (container name + output dir race). The
+# kernel-global loop pool — the reason concurrent runs used to sabotage
+# each other — is handled by the loop-shim installed into every task
+# container (global cross-container losetup lock + per-container path
+# aliasing). If the shim install fails, we fall back to serializing whole
+# runs host-wide (acquired later, just before the agent starts).
 
 # parse task.json (python3: robust JSON, no quote/space pitfalls like awk)
 read -r BRAND FWFILE < <(python3 -c '
@@ -94,6 +97,12 @@ TASK_ID=$(printf '%s__%s' "$VENDOR" "$MODEL" | tr '[:upper:]' '[:lower:]' | sed 
 IMAGE="task-$TASK_ID:raw"
 CONTAINER="task-$TASK_ID"
 OUTDIR="$FWDIR/output"
+
+# one run per task folder at a time (container name + output dir are
+# per-task resources); DIFFERENT tasks may run in parallel
+TASKLOCK=/tmp/agent-scan-task-$(printf '%s' "$TASK_ID" | tr -c 'a-z0-9._-' '-').lock
+exec 8>"$TASKLOCK"
+flock -n 8 || { echo "[-] another agent-run is already processing $TASK_ID" >&2; exit 1; }
 
 echo "[*] task=$TASK_ID brand=$BRAND firmware=$FWFILE timeout=${TIMEOUT}s"
 
@@ -147,6 +156,24 @@ docker cp "$ROOT/scripts/emu.sh" "$CONTAINER:/usr/local/bin/emu"
 docker cp "$ROOT/scripts/emu-shell.sh" "$CONTAINER:/usr/local/bin/emu-shell"
 docker cp "$ROOT/scripts/solved-entrypoint.sh" "$CONTAINER:/usr/local/bin/solved-entrypoint"
 docker exec "$CONTAINER" chmod +x /usr/local/bin/hverify /usr/local/bin/emu /usr/local/bin/emu-shell /usr/local/bin/solved-entrypoint
+
+# loop-pool isolation: the shims make losetup/kpartx parallel-safe (global
+# cross-container lock + per-container aliasing — rationale in the shim
+# headers, scripts/loop-shim/losetup.sh). Installed under their plain names
+# (PATH shadowing requires exactly `losetup`/`kpartx`).
+# With them installed this run may execute CONCURRENTLY with others; without
+# them, fall back to the host-wide serial lock acquired just below.
+docker cp "$ROOT/scripts/loop-shim/losetup.sh" "$CONTAINER:/usr/local/sbin/losetup" 2>/dev/null \
+ && docker cp "$ROOT/scripts/loop-shim/kpartx.sh" "$CONTAINER:/usr/local/sbin/kpartx" 2>/dev/null \
+ && docker exec "$CONTAINER" chmod +x /usr/local/sbin/losetup /usr/local/sbin/kpartx 2>/dev/null \
+ && SHIM=1 || SHIM=0
+if [ "$SHIM" = 1 ]; then
+    echo "[*] loop shims installed — parallel-safe; this run may execute concurrently with others"
+else
+    echo "[*] loop shims NOT installed — falling back to host-wide serial lock"
+    exec 9>/tmp/agent-scan-agent-run.lock
+    flock -n 9 || { echo "[*] another agent-run holds the shared /dev loop pool — waiting for it to finish..."; flock 9; }
+fi
 
 # run the agent under a wall-clock timeout
 #    The kill must run INSIDE the container (killing the docker-exec client
