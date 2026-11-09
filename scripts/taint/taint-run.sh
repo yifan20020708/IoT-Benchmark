@@ -34,9 +34,11 @@
 #   1. schema validation of summary.json + functions/*.json
 #   2. cross-check of every recorded call address against the Ghidra index
 #      the agent itself built (fabricated call sites cannot survive this)
-#   3. entry-coverage check: every summary entry of the probed binary must
-#      be attempted by some probe (entry_break on its handler, or its
-#      endpoint/module key in a request); unattempted entries fail the run
+#   3. coverage checks: every entry of the probed binary must be attempted
+#      by some probe (entry_break on its handler, or its endpoint/module
+#      key in a request), and every recorded call site of the probed
+#      binary must be armed in some probe's ret_breaks — unattempted
+#      entries or unarmed sites fail the run
 #   4. INDEPENDENT re-run of verify-request.sh on the agent's probes.json
 #      with fresh canaries and a fresh container (from a driver-named spec
 #      copy, so the agent's own self-check evidence is never clobbered) —
@@ -274,10 +276,12 @@ for path in sorted(glob.glob(os.path.join(out, "functions", "*.json"))):
     if idx is not None and rec.get("function") not in idx["functions"]:
         errors.append(f"{where}: function '{rec.get('function')}' not in the index")
     counts["function_records"] += 1
+    rec["_path"] = os.path.basename(path)
     records.append(rec)
 
-# 3) probes.json must be a valid verifier spec + entry coverage
+# 4) probes.json must be a valid verifier spec + entry coverage
 unattempted = []
+unarmed = []
 if probes is not None:
     if not isinstance(probes.get("probes"), list) or not probes["probes"]:
         errors.append("probes.json: must hold a non-empty 'probes' list")
@@ -313,6 +317,22 @@ if probes is not None:
                 unattempted.append(
                     f"{e.get('endpoint') or e.get('key')} -> {e.get('handler')}")
 
+        # armed-site coverage: every call site of the PROBED binary must be
+        # armed in some probe's ret_breaks (breakpoints are free — a site
+        # that cannot execute is honestly 'not-reached', but a site never
+        # armed was never tested at all). Call sites of other boundary
+        # binaries are exempt: one spec probes one binary.
+        armed = {norm_addr(a)
+                 for p in probes["probes"] for a in (p.get("ret_breaks") or [])}
+        for rec in records:
+            if rec.get("binary") != probes.get("binary"):
+                continue
+            where = os.path.basename(rec.get("_path", "?"))
+            for c in rec.get("taint_source_calls") or []:
+                a = c.get("call_address")
+                if a and norm_addr(a) not in armed:
+                    unarmed.append(f"{where}: {a}")
+
 if errors:
     for e in errors:
         print(f"  [-] {e}")
@@ -320,11 +340,16 @@ if unattempted:
     print(f"  [-] {len(unattempted)} entries of the probed binary are not "
           f"attempted by any probe (contract: every entry attempted); "
           f"first: {unattempted[:5]}")
+if unarmed:
+    print(f"  [-] {len(unarmed)} call sites of the probed binary are not "
+          f"armed in any probe's ret_breaks (contract: every call site "
+          f"armed); first: {unarmed[:5]}")
 ok = not errors and counts["boundary_binaries"] > 0 \
     and counts["taint_sources"] > 0 and counts["entries"] > 0 \
     and counts["function_records"] > 0
 json.dump({"schema_ok": ok, "errors": errors, "counts": counts,
-           "entries_unattempted": unattempted},
+           "entries_unattempted": unattempted,
+           "call_sites_unarmed": unarmed},
           open(os.path.join(rundir, "validation.json"), "w"), indent=2)
 print(f"[validate] {'OK' if ok else 'FAILED'}: {counts}")
 sys.exit(0 if ok else 1)
@@ -379,6 +404,7 @@ def load(p, default=None):
 validation = load(os.path.join(rundir, "validation.json"), {})
 counts = validation.get("counts", {})
 unattempted = validation.get("entries_unattempted") or []
+unarmed = validation.get("call_sites_unarmed") or []
 probes = load(os.path.join(out, "probes.json"), {})
 probe_list = probes.get("probes", []) if isinstance(probes, dict) else []
 verdicts = load(os.path.join(rundir, "verify-verdicts.json"), {})
@@ -391,20 +417,62 @@ probe_entry = {p.get("id"): ent_key(p.get("entry_break"))
 probe_outcomes = {r.get("probe"): r.get("verdict")
                   for r in verdicts.get("probes", [])}
 
-# ---- per-call-site dynamic status from the DRIVER's own re-run ---------------
-# verified      a passing probe armed this call site's return (canary returned)
-# reached-unfed a probe armed it, the source ran, no canary (wrong param/shape)
-# not-reached   a probe armed it, the source never ran (request never arrived)
+# ---- per-call-site dynamic status from the DRIVER's own re-run -----------
+# Primary source: the ret_hit EVENTS themselves — a site is 'verified' only
+# when its OWN return event carried the canary (a passing probe proves its
+# entry's chain, but different sites in one closure can read different
+# params). Event addresses are return sites (call address + arch delay:
+# 4 on arm/aarch64, 8 on mips); map back by arithmetic.
+# Fallback when no events file exists: probe-level attribution.
+# verified      a return event at this site matched the canary
+# reached-unfed return events at this site, none carried the canary (it
+#               executed but read non-canary data)
+# not-reached   armed in some probe's ret_breaks, never executed
 # unknown       unrecognized verdict for its probes
-# not-attempted no probe armed it (applied when writing back to the records)
+# not-attempted never armed (applied when writing back to the records)
 ORDER = ["verified", "reached-unfed", "not-reached", "unknown"]
+all_armed = {a for lst in probe_ret_breaks.values() for a in lst}
+site_canary = {}   # norm(call) -> True if any ret event there hit a canary
+evp = os.path.join(model, "taint-source", "verify", "driver-probes",
+                   "events.jsonl")
+if os.path.exists(evp):
+    for line in open(evp, errors="replace"):
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        if e.get("event") != "ret_hit" or not e.get("address"):
+            continue
+        a = re.sub(r"^\*?0x", "", str(e["address"])).lower()
+        try:
+            av = int(a, 16)
+        except ValueError:
+            continue
+        for d in (4, 8):
+            call = format(av - d, "x")
+            if call in all_armed:
+                if e.get("canary_hits"):
+                    site_canary[call] = True
+                elif call not in site_canary:
+                    site_canary[call] = False
+                break
+
 call_status = {}
-for pid, vd in probe_outcomes.items():
-    st = {"pass": "verified", "no-canary": "reached-unfed",
-          "no-hit": "not-reached"}.get(vd, "unknown")
-    for a in probe_ret_breaks.get(pid, []):
-        if a not in call_status or ORDER.index(st) < ORDER.index(call_status[a]):
-            call_status[a] = st
+if site_canary:
+    for a in all_armed:
+        if a in site_canary:
+            call_status[a] = "verified" if site_canary[a] else "reached-unfed"
+        else:
+            call_status[a] = "not-reached"
+else:
+    # fallback (no events available): a passing probe credits its armed
+    # sites collectively — coarser than per-site events
+    for pid, vd in probe_outcomes.items():
+        st = {"pass": "verified", "no-canary": "reached-unfed",
+              "no-hit": "not-reached"}.get(vd, "unknown")
+        for a in probe_ret_breaks.get(pid, []):
+            if a not in call_status or ORDER.index(st) < ORDER.index(call_status[a]):
+                call_status[a] = st
 verified_handlers = {probe_entry[pid] for pid, vd in probe_outcomes.items()
                      if vd == "pass" and pid in probe_entry}
 
@@ -470,9 +538,12 @@ elif expected_fail:
                    + ", ".join(expected_fail[:10]))
 if unattempted:
     reasons.append(f"{len(unattempted)} entries not attempted by any probe")
+if unarmed:
+    reasons.append(f"{len(unarmed)} call sites not armed in any probe")
 
 success = (validate_rc == 0 and verdicts and verify_rc is not None
-           and verify_rc != 2 and not expected_fail and not unattempted)
+           and verify_rc != 2 and not expected_fail
+           and not unattempted and not unarmed)
 if success:
     status = "success"
 elif agent_rc == 124:
@@ -515,6 +586,7 @@ result = {
         "entries_unattempted": len(unattempted),
         "function_records": counts.get("function_records", 0),
         "call_sites": counts.get("call_sites", 0),
+        "call_sites_unarmed": len(unarmed),
         "probes": len(probe_expect),
         "verified_call_sites": tally.get("verified", 0),
         "call_sites_reached_unfed": tally.get("reached-unfed", 0),

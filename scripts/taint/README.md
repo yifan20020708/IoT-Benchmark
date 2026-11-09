@@ -61,17 +61,21 @@ then re-proves the agent's claims with its own canaries.
   `"expect": "unreachable"`. Only pass-expected failures fail the run: a
   `no-hit` on an unreachable-expected probe is harness-verified PROOF of
   unreachability, not a failure.
-- **Every entry must be attempted** (one probe per module/form/endpoint):
-  unattempted entries of the probed binary fail the run — the dynamic
-  contract is full call-site coverage, not a sample.
+- **Every entry must be attempted** (one probe per module/form/endpoint)
+  and **every recorded call site of the probed binary must be armed** in
+  some probe's `ret_breaks` (breakpoints are free; a site that cannot
+  execute is honestly `not-reached`, an unarmed site was never tested) —
+  the dynamic contract is full call-site coverage, not a sample.
 - **Write-back.** After its fresh-canary re-run, the driver annotates every
   function record's call sites with their dynamic status (`verified` |
-  `reached-unfed` | `not-reached` | `not-attempted`) and writes
-  `verified-callsites.json` — the next stage consumes verified claims, not
-  static ones.
+  `reached-unfed` | `not-reached` | `not-attempted`) — `verified` means a
+  return event AT THAT SITE carried the canary (per-site proof, not
+  probe-level credit) — and writes `verified-callsites.json`; the next
+  stage consumes verified claims, not static ones.
 - Statuses: `success` = schema valid AND every entry attempted AND every
-  pass-expected probe passed the driver's own fresh-canary re-run;
-  `fail` = anything else (with `status_reasons` in result.json).
+  call site of the probed binary armed AND every pass-expected probe passed
+  the driver's own fresh-canary re-run; `fail` = anything else (with
+  `status_reasons` in result.json).
 
 ## Scripts
 
