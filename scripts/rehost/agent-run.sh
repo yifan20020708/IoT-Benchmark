@@ -15,7 +15,7 @@
 #   INPUT  : <fw>/task.json, <fw>/<firmware>, <fw>/rootfs/ (required),
 #            <fw>/decompiled-rootfs/ (optional — empty placeholder if absent),
 #            $ROOT/.env (LLM credentials),
-#            scripts/{agent-prompt.md,hverify.sh,emu.sh,emu-shell.sh,
+#            scripts/rehost/{agent-prompt.md,hverify.sh,emu.sh,emu-shell.sh,
 #            solved-entrypoint.sh,loop-shim/{losetup.sh,kpartx.sh},
 #            Dockerfile.task}, image firmae-base:latest
 #   OUTPUT : <fw>/result.json  — the driver's own verdict (never written by
@@ -25,10 +25,10 @@
 #            harness_* verdict files, agent terminal log
 #   EXIT   : 0 = harness-verified success; 1 = anything else
 #   NEXT   : on success, promote the kept container with
-#            scripts/commit-solved.sh <fw-folder>  -> task-<id>:solved
+#            scripts/rehost/commit-solved.sh <fw-folder>  -> task-<id>:solved
 #   PARALLEL: different tasks may run concurrently — the loop-shim installed
 #            into every task container isolates the kernel-global loop pool
-#            (scripts/loop-shim/losetup.sh header). Same task folder:
+#            (scripts/rehost/loop-shim/losetup.sh header). Same task folder:
 #            refused by a per-task lock. If the shim install fails, runs
 #            serialize host-wide instead (correct but slow).
 #
@@ -46,7 +46,7 @@ done
 FWDIR="${1:?usage: agent-run.sh [--timeout <seconds>] <fw-folder>}"
 FWDIR="$(cd "$FWDIR" 2>/dev/null && pwd)" || { echo "[-] no such folder: $1" >&2; exit 1; }
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENV_FILE="$ROOT/.env"
 
 RUN_START=$(date +%s)
@@ -150,21 +150,21 @@ docker exec "$CONTAINER" pg_isready -q -h 127.0.0.1 || write_early_result "postg
 #    exact same deterministic criteria the harness will apply in step 5)
 # emu/emu-shell/solved-entrypoint ride along so a later commit-solved.sh of
 #    this container bakes the runtime entrypoints into the solved image
-docker cp "$ROOT/scripts/agent-prompt.md" "$CONTAINER:/opt/agent-prompt.md"
-docker cp "$ROOT/scripts/hverify.sh" "$CONTAINER:/usr/local/bin/hverify"
-docker cp "$ROOT/scripts/emu.sh" "$CONTAINER:/usr/local/bin/emu"
-docker cp "$ROOT/scripts/emu-shell.sh" "$CONTAINER:/usr/local/bin/emu-shell"
-docker cp "$ROOT/scripts/solved-entrypoint.sh" "$CONTAINER:/usr/local/bin/solved-entrypoint"
+docker cp "$ROOT/scripts/rehost/agent-prompt.md" "$CONTAINER:/opt/agent-prompt.md"
+docker cp "$ROOT/scripts/rehost/hverify.sh" "$CONTAINER:/usr/local/bin/hverify"
+docker cp "$ROOT/scripts/rehost/emu.sh" "$CONTAINER:/usr/local/bin/emu"
+docker cp "$ROOT/scripts/rehost/emu-shell.sh" "$CONTAINER:/usr/local/bin/emu-shell"
+docker cp "$ROOT/scripts/rehost/solved-entrypoint.sh" "$CONTAINER:/usr/local/bin/solved-entrypoint"
 docker exec "$CONTAINER" chmod +x /usr/local/bin/hverify /usr/local/bin/emu /usr/local/bin/emu-shell /usr/local/bin/solved-entrypoint
 
 # loop-pool isolation: the shims make losetup/kpartx parallel-safe (global
 # cross-container lock + per-container aliasing — rationale in the shim
-# headers, scripts/loop-shim/losetup.sh). Installed under their plain names
+# headers, scripts/rehost/loop-shim/losetup.sh). Installed under their plain names
 # (PATH shadowing requires exactly `losetup`/`kpartx`).
 # With them installed this run may execute CONCURRENTLY with others; without
 # them, fall back to the host-wide serial lock acquired just below.
-docker cp "$ROOT/scripts/loop-shim/losetup.sh" "$CONTAINER:/usr/local/sbin/losetup" 2>/dev/null \
- && docker cp "$ROOT/scripts/loop-shim/kpartx.sh" "$CONTAINER:/usr/local/sbin/kpartx" 2>/dev/null \
+docker cp "$ROOT/scripts/rehost/loop-shim/losetup.sh" "$CONTAINER:/usr/local/sbin/losetup" 2>/dev/null \
+ && docker cp "$ROOT/scripts/rehost/loop-shim/kpartx.sh" "$CONTAINER:/usr/local/sbin/kpartx" 2>/dev/null \
  && docker exec "$CONTAINER" chmod +x /usr/local/sbin/losetup /usr/local/sbin/kpartx 2>/dev/null \
  && SHIM=1 || SHIM=0
 if [ "$SHIM" = 1 ]; then
@@ -219,7 +219,7 @@ AGENT_DUR=$((AGENT_END - AGENT_START))
 # deterministic harness verification — trust nothing the agent wrote
 VERIFY_START=$(date +%s)
 echo "[*] harness verification: clean re-boot + independent web check..."
-docker cp "$ROOT/scripts/hverify.sh" "$CONTAINER:/usr/local/bin/hverify"
+docker cp "$ROOT/scripts/rehost/hverify.sh" "$CONTAINER:/usr/local/bin/hverify"
 VERIFY_RC=0
 docker exec "$CONTAINER" bash /usr/local/bin/hverify || VERIFY_RC=1
 VERIFY_END=$(date +%s)

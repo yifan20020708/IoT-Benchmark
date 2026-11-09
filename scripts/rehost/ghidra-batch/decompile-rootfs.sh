@@ -12,7 +12,7 @@
 #                                     the output tree (busybox farms stay
 #                                     navigable), others mirrored as-is
 #           - every ELF binary     -> a DIRECTORY named after the file, filled
-#                                     by scripts/ghidra-batch/decompile-all.sh
+#                                     by scripts/rehost/ghidra-batch/decompile-all.sh
 #                                     with one <function>_<address>.c per
 #                                     function + .decompile-all.log
 #           - other regular files  -> not represented

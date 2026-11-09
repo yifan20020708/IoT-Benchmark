@@ -1,6 +1,6 @@
 # agent-scan :: task image template (dataset layout)
 #
-# Build context = a STAGING directory prepared by scripts/agent-run.sh from
+# Build context = a STAGING directory prepared by scripts/rehost/agent-run.sh from
 # data/firmware/<vendor>/<model>/, holding exactly: task.json, the firmware
 # binary, rootfs/, decompiled-rootfs/ — so no stray files (result.json,
 # output/, older firmwares) ever enter the image.
@@ -41,4 +41,4 @@ ENV BRAND=${BRAND} \
     TASK_NAME=${TASK_NAME}
 
 # Inherited entrypoint starts PostgreSQL and keeps the container alive;
-# the driver (scripts/agent-run.sh) execs `claude -p` inside.
+# the driver (scripts/rehost/agent-run.sh) execs `claude -p` inside.

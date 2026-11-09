@@ -2,7 +2,7 @@
 # agent-scan :: stage 1 — agent-driven firmware collection (runs on the host)
 #
 # Usage: collect-firmware.sh [--timeout <s>] <vendor> <count> <outdir>
-#   e.g.: ./scripts/collect-firmware.sh tenda 50 data/firmware/tenda
+#   e.g.: ./scripts/rehost/collect-firmware.sh tenda 50 data/firmware/tenda
 #
 # The collection agent (claude, effort=max, credentials from .env) runs
 # DIRECTLY on this host — no container: it discovers the vendor's official
@@ -15,7 +15,7 @@
 # model folders are kept and count toward the target.
 #
 # Finally, as a DETERMINISTIC (non-agent) phase, every valid rootfs is
-# mirror-decompiled: scripts/ghidra-batch/decompile-rootfs.sh
+# mirror-decompiled: scripts/rehost/ghidra-batch/decompile-rootfs.sh
 #   <model>/rootfs/  ->  <model>/decompiled-rootfs/   (one <function>_<addr>.c
 # per function, layout mirrored). Resumable — reruns only touch new binaries.
 # Per-ELF Ghidra failures are normal and reported per model, never fatal.
@@ -46,7 +46,7 @@ OUTDIR="${3:?missing outdir}"
 case "$VENDOR" in ''|*[!a-z0-9-]*) echo "[-] vendor must be [a-z0-9-]: $VENDOR" >&2; exit 1 ;; esac
 case "$COUNT" in ''|*[!0-9]*) echo "[-] count must be a positive integer: $COUNT" >&2; exit 1 ;; esac
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENV_FILE="$ROOT/.env"
 [ -f "$ENV_FILE" ] || { echo "[-] missing $ENV_FILE" >&2; exit 1; }
 
@@ -63,7 +63,7 @@ PROMPT=$(mktemp)
 trap 'rm -rf "$CONF" "$PROMPT"' EXIT
 
 sed -e "s|__OUTDIR__|$OUTDIR|g" -e "s|__VENDOR__|$VENDOR|g" -e "s|__COUNT__|$COUNT|g" \
-    "$ROOT/scripts/collect-prompt.md" > "$PROMPT"
+    "$ROOT/scripts/rehost/collect-prompt.md" > "$PROMPT"
 
 BEFORE=$(find "$OUTDIR" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | wc -l)
 echo "[*] collect: vendor=$VENDOR target=$COUNT (already have $BEFORE) outdir=$OUTDIR timeout=${TIMEOUT}s"
@@ -166,7 +166,7 @@ if [ "$DECOMPILE" -eq 1 ] && [ "${#VALID_DIRS[@]}" -gt 0 ]; then
     dc_fail=0
     for d in "${VALID_DIRS[@]}"; do
         model=$(basename "$d")
-        if "$ROOT/scripts/ghidra-batch/decompile-rootfs.sh" --jobs "$DJOBS" \
+        if "$ROOT/scripts/rehost/ghidra-batch/decompile-rootfs.sh" --jobs "$DJOBS" \
                 "$d/rootfs" "$d/decompiled-rootfs" > "$d/.decompile-rootfs.log" 2>&1; then
             dc_ok=$((dc_ok + 1))
             echo "    [dc ok]   $model"

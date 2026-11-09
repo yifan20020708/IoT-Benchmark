@@ -28,13 +28,13 @@
 # Per-task console log: <task>/batch.log (agent-run's own agent.log lives in
 # <task>/output/). Live START/END/progress lines and a final summary here.
 #
-# Parallel-safety: the loop-shim (scripts/loop-shim/losetup.sh) is installed
+# Parallel-safety: the loop-shim (scripts/rehost/loop-shim/losetup.sh) is installed
 # by agent-run.sh into every task container — concurrent tasks are safe.
 # Without it agent-run falls back to host-wide serialization (correct, but
 # --jobs > 1 then only queues). Same-task concurrency is refused by
 # agent-run's per-task lock regardless.
 #
-# Live view: scripts/batch-monitor.sh <fw-root> — same root argument; reads
+# Live view: scripts/rehost/batch-monitor.sh <fw-root> — same root argument; reads
 # the atomic state file this script maintains (/tmp/agent-scan-monitor/).
 set -euo pipefail
 
@@ -57,12 +57,12 @@ while [ $# -gt 0 ]; do
 done
 ROOTDIR="${1:?usage: batch-run.sh [--jobs N] [--timeout S] [--no-promote] [--dry-run] <fw-root>}"
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 [ -d "$ROOTDIR" ] || { echo "[-] no such folder: $ROOTDIR" >&2; exit 1; }
 ROOTDIR="$(cd "$ROOTDIR" && pwd)"
 case "$JOBS" in ''|*[!0-9]*|0) echo "[-] --jobs must be a positive integer" >&2; exit 1 ;; esac
 case "$TIMEOUT" in ''|*[!0-9]*|0) echo "[-] --timeout must be a positive integer" >&2; exit 1 ;; esac
-[ "$JOBS" -gt 1 ] && [ ! -f "$ROOT/scripts/loop-shim/losetup.sh" ] && \
+[ "$JOBS" -gt 1 ] && [ ! -f "$ROOT/scripts/rehost/loop-shim/losetup.sh" ] && \
     echo "[!] loop-shim missing — agent-run will serialize host-wide (--jobs=$JOBS only queues)" >&2
 
 # ---- discovery (recursive; exclude harvest copies of task.json) ---------
@@ -179,9 +179,9 @@ run_one() {
     state task-start "$fw" $$
     exec 7>&-
     echo "[batch $(date +%H:%M:%S)] START $fw"
-    "$ROOT/scripts/agent-run.sh" --timeout "$BATCH_TIMEOUT" "$fw" >"$log" 2>&1 || rc=$?
+    "$ROOT/scripts/rehost/agent-run.sh" --timeout "$BATCH_TIMEOUT" "$fw" >"$log" 2>&1 || rc=$?
     if [ "$rc" = 0 ] && [ "$BATCH_PROMOTE" = 1 ]; then
-        "$ROOT/scripts/commit-solved.sh" "$fw" >>"$log" 2>&1 && promoted=1 || true
+        "$ROOT/scripts/rehost/commit-solved.sh" "$fw" >>"$log" 2>&1 && promoted=1 || true
     fi
     if [ -f "$fw/result.json" ]; then
         st=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status","?"))' \

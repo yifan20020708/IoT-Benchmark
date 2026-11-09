@@ -3,7 +3,7 @@
 # to a solved image (the step AFTER agent-run.sh reports success)
 #
 # Usage: commit-solved.sh <fw-folder>
-#   e.g.: ./scripts/commit-solved.sh data/firmware/tenda/TEG5328FV1.0
+#   e.g.: ./scripts/rehost/commit-solved.sh data/firmware/tenda/TEG5328FV1.0
 #
 # Preconditions (checked, fail fast):
 #   - <fw-folder>/result.json holds status=success (harness ground truth —
@@ -53,7 +53,7 @@ NQ=$(docker exec "$CONTAINER" bash -c 'pgrep -f "^qemu-system" | wc -l' 2>/dev/n
 # (agent-run.sh ships it; a container built by an older flow may lack it,
 # which would produce an image that dies with exit 127 on first boot)
 docker exec "$CONTAINER" test -x /usr/local/bin/solved-entrypoint \
-    || { echo "[-] /usr/local/bin/solved-entrypoint missing in $CONTAINER — docker cp scripts/solved-entrypoint.sh $CONTAINER:/usr/local/bin/solved-entrypoint first" >&2; exit 1; }
+    || { echo "[-] /usr/local/bin/solved-entrypoint missing in $CONTAINER — docker cp scripts/rehost/solved-entrypoint.sh $CONTAINER:/usr/local/bin/solved-entrypoint first" >&2; exit 1; }
 
 echo "[*] promoting $CONTAINER -> $IMAGE"
 echo "[*] hygiene: stripping build-agent leftovers"

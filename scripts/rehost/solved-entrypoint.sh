@@ -9,7 +9,7 @@
 # Run the solved image with the same flags the pipeline needed:
 #   docker run -d --init --privileged --device /dev/kvm -v /dev:/dev \
 #       --restart unless-stopped task-<name>:solved
-# (scripts/run-solved.sh wraps this.) Web service lands on the IP recorded
+# (scripts/rehost/run-solved.sh wraps this.) Web service lands on the IP recorded
 # in scratch/<iid>/ip (~1-2 min under TCG); the image HEALTHCHECK polls it.
 #
 # If QEMU dies, run.sh tears down its tap and exits, this entrypoint exits

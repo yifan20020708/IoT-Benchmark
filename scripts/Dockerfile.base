@@ -106,8 +106,8 @@ RUN install -m 755 /opt/FirmAE-pro/core/unstuff /usr/local/bin/unstuff
 # ---------------------------------------------------------------------------
 # 5. helper scripts
 # ---------------------------------------------------------------------------
-COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-COPY scripts/emu-check.sh /usr/local/bin/emu-check
+COPY scripts/rehost/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY scripts/rehost/emu-check.sh /usr/local/bin/emu-check
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/emu-check
 
 # ---------------------------------------------------------------------------
@@ -148,7 +148,7 @@ RUN git config --global user.email "agent-scan@localhost" \
 
 # agent task prompt (English) — baked here; agent-emulate.sh docker-cp's a
 # fresh copy over it at run time so prompt iterations don't need rebuilds
-COPY scripts/agent-prompt.md /opt/agent-prompt.md
+COPY scripts/rehost/agent-prompt.md /opt/agent-prompt.md
 
 # ---------------------------------------------------------------------------
 # 9. runtime defaults
