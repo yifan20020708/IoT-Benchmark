@@ -43,6 +43,13 @@
 #   }]
 # }
 # {{GUEST_IP}} is substituted from the emulation's own IP (emu ip).
+# {{CANARY}} (string) and {{CANARY_INT}} (decimal number) are the two canary
+# channels, generated per probe by this script and never shown to the
+# agent: string params carry the string canary; numeric fields consumed by
+# int-returning accessors (cJSON_GetInt/GetBool-style) carry {{CANARY_INT}},
+# proven by argument/return register EQUALITY in the recorder. Probes may
+# carry "expect": "pass" (default) | "unreachable" — this script is
+# expect-blind (exit 1 on any non-pass); the DRIVER interprets expect.
 #
 # Output: --out verdict JSON (default <model>/taint-source/verify/<stem>/
 # verdicts.json) + events.jsonl + gdb.log in the same directory.
@@ -50,6 +57,7 @@
 # the source) | no-canary (source ran, canary absent). exit 0 = all pass,
 # 1 = any fail, 2 = infrastructure error (boot/attach failure).
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1   # no __pycache__ anywhere in the pipeline
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 KEEP=0
@@ -122,9 +130,15 @@ for i, p in enumerate(probes):
     if p["id"] in ids:
         sys.exit(f"[-] duplicate probe id: {p['id']}")
     ids.add(p["id"])
+    if p.get("expect") not in (None, "pass", "unreachable"):
+        sys.exit(f"[-] probe[{i}]: 'expect' must be 'pass' or 'unreachable', "
+                 f"got {p.get('expect')!r}")
 # canaries are generated HERE, never shown to the caller: the agent cannot
-# pre-plant evidence for a value it has not seen
-canaries = {p["id"]: "TAINT-" + secrets.token_hex(5) for p in probes}
+# pre-plant evidence for a value it has not seen. Two channels per probe:
+# the string canary (arg/return buffers) and the int canary (register
+# equality — int-returning accessors can never surface a string)
+canaries = {p["id"]: {"string": "TAINT-" + secrets.token_hex(5),
+                      "int": secrets.randbits(31)} for p in probes}
 json.dump(canaries, open(os.path.join(work, "canaries.json"), "w"), indent=2)
 print(f"[verify] spec ok: {len(probes)} probe(s)")
 EOF
@@ -207,8 +221,10 @@ spec = json.load(open(spec))
 canaries = json.load(open(os.path.join(work, "canaries.json")))
 sends = {}
 for p in spec["probes"]:
+    can = canaries[p["id"]]
     argv = [a.replace("{{GUEST_IP}}", guest_ip)
-             .replace("{{CANARY}}", canaries[p["id"]])
+             .replace("{{CANARY}}", can["string"])
+             .replace("{{CANARY_INT}}", str(can["int"]))
             for a in p["request"]]
     print(f"[verify] probe {p['id']}: {' '.join(argv[:6])}{' ...' if len(argv) > 6 else ''}")
     t0 = time.time()
@@ -296,7 +312,8 @@ for p in spec["probes"]:
             {"call_site": e.get("call_site"), "arg_strings": e.get("arg_strings")}
             for e in hit[:5]],
         "return_evidence": [
-            {"call_site": e.get("address"), "ret_string": e.get("ret_string")}
+            {"call_site": e.get("address"), "ret": e.get("ret"),
+             "ret_string": e.get("ret_string")}
             for e in ret[:5]],
         "entry_hits": len(entry),
         "entry_verified": bool(entry),
