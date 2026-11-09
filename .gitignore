@@ -9,3 +9,7 @@ deps/
 # large emulation artifacts
 *.tar.gz
 *.image
+
+# python bytecode
+__pycache__/
+*.pyc
