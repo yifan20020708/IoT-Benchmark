@@ -137,8 +137,12 @@ if [ "$web_any" != "true" ]; then
     exit 2
 fi
 
-# ---- ROUND 2 (repair): retry pass-expected failures on clean boots -------------
-# verdicts stay expect-blind; the repair POLICY filters by expect here
+# ---- ROUND 2 (repair): retry EXPECTED failures on clean boots -----------------
+# verdicts stay expect-blind; the repair POLICY filters by expect here.
+# unreachable-expected probes are excluded by design: their failure IS
+# the product. pass- and unfed-expected failures both get retried (an
+# unfed probe's dispatch proof is just as wedge-victim-prone as a pass
+# probe's canary).
 ROUND2=$(python3 - "$SPEC" "$WORKDIR/analysis.json" "$WORKDIR/r2-spec.json" <<'EOF'
 import json, sys
 spec_path, analysis_path, r2_path = sys.argv[1:4]
@@ -147,7 +151,8 @@ a = json.load(open(analysis_path))
 failed = set(a.get("failed") or [])
 suspects = set(a.get("suspects") or [])
 retry = [p for p in spec["probes"]
-         if (p.get("expect") or "pass") == "pass" and p.get("id") in failed]
+         if (p.get("expect") or "pass") in ("pass", "unfed")
+         and p.get("id") in failed]
 if not retry:
     print(json.dumps({"round2": False}))
 else:

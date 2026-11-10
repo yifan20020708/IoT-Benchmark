@@ -48,8 +48,8 @@
 # agent: string params carry the string canary; numeric fields consumed by
 # int-returning accessors (cJSON_GetInt/GetBool-style) carry {{CANARY_INT}},
 # proven by argument/return register EQUALITY in the recorder. Probes may
-# carry "expect": "pass" (default) | "unreachable" — this script is
-# expect-blind (exit 1 on any non-pass); the DRIVER interprets expect.
+# carry "expect": "pass" (default) | "unreachable" | "unfed" — this script
+# is expect-blind (exit 1 on any non-pass); the DRIVER interprets expect.
 #
 # Output: --out verdict JSON (default <model>/taint-source/verify/<stem>/
 # verdicts.json) + events.jsonl + gdb.log in the same directory.
@@ -137,9 +137,9 @@ for i, p in enumerate(probes):
     if p["id"] in ids:
         sys.exit(f"[-] duplicate probe id: {p['id']}")
     ids.add(p["id"])
-    if p.get("expect") not in (None, "pass", "unreachable"):
-        sys.exit(f"[-] probe[{i}]: 'expect' must be 'pass' or 'unreachable', "
-                 f"got {p.get('expect')!r}")
+    if p.get("expect") not in (None, "pass", "unreachable", "unfed"):
+        sys.exit(f"[-] probe[{i}]: 'expect' must be 'pass', 'unreachable' or "
+                 f"'unfed', got {p.get('expect')!r}")
 # canaries are generated HERE, never shown to the caller: the agent cannot
 # pre-plant evidence for a value it has not seen. Two channels per probe:
 # the string canary (arg/return buffers) and the int canary (register

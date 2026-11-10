@@ -94,6 +94,13 @@ Leads: frontend `endpoints`/`action_names` joined against binary strings
 the handler function, the parameters the handler reads, and whether
 authentication is required. Unauthenticated entries are the easiest to probe.
 
+Pure getter entries (handlers that read stored state and respond) still
+belong in the inventory — probe them with their natural request and
+`"expect": "unfed"` (see stage 5). The cross-request storage channel — a
+setter persisting user input that a getter serves back on ANOTHER request —
+is the NEXT stage's second data-dependency kind; do not model, seed, or
+verify that flow here. This stage maps the reception surface only.
+
 ## Stage 4 — per-function call records
 
 For EVERY function containing a taint-source call, write one record file
@@ -136,7 +143,11 @@ boot ≈ 1–2 min, probes are batched per boot (many probes, one run; raise
 - **One probe per entry** (module/form/endpoint): each of the summary's
   entries must appear in at least one probe — either as `entry_break` on its
   handler or with its endpoint/module key in the request. Unattempted
-  entries are the one thing the harness treats as incomplete work.
+  entries are the one thing the harness treats as incomplete work. A pure
+  getter entry (responds from stored state, no meaningful params to feed)
+  is still an attempted entry: ship its natural request with
+  `"expect": "unfed"` — the harness proves it dispatches, which is the
+  claim.
 - `probes.json` targets ONE boundary binary (its top-level `binary` field:
   the gdb symbol file and vaddr space are per-binary). If you identified
   more than one boundary binary, target the web daemon and record the
@@ -158,6 +169,16 @@ boot ≈ 1–2 min, probes are batched per boot (many probes, one run; raise
   claim, not acceptance. A handler that runs your request and reads a
   different parameter gives `no-canary`: fix the request shape or the
   param name, or record the call site as reached-but-unfed.
+- **`expect` vocabulary** — `"pass"` (default; the canary must reach the
+  source family), `"unreachable"` (the entry genuinely cannot be reached;
+  the harness-verified `no-hit` is proof, not failure), `"unfed"` (the
+  entry IS reachable but this request's input does not reach the source
+  family — pure getters, read-only entries, state-gated paths; it
+  REQUIRES `entry_break`: the driver proves the handler dispatched via
+  the entry hit or the source family executing). `unfed` completes the
+  entry inventory without forcing you to hand-tune param feeding for
+  handlers whose reception claim is just "dispatched". Batch-template
+  your getter probes — don't spend budget perfecting them.
 - `source_break`/`entry_break` take a symbol name or the address form
   `"*0x42e94"` (use the address when the name is ambiguous or the binary is
   partially stripped).
@@ -220,14 +241,20 @@ well-shaped request, (2) full `ret_breaks` on the unauthenticated entries,
   The harness's fresh-canary re-run later annotates each call with its
   dynamic verify status (`verified` / `reached-unfed` / `not-reached` /
   `not-attempted`) — write the records clean, without those fields. The
-  driver's final step moves each record into its own
-  `functions/<binary__function>/` folder alongside the probes that
-  exercised it (the next stage's per-agent working directories); you
-  write the flat files, the driver does the reorganizing.
+  driver's final step then splits them: functions with at least one
+  dynamically-verified call site become `functions/<binary__function>/`
+  folders (the next stage's STARTING POINTS, indexed by
+  `functions/INDEX.json`), the rest land in `functions-context/` (storage-
+  channel / seeding candidates); each folder holds the record plus a
+  probes.json view split into `reception_probes` (the requests that fed
+  this function's sites) and `context_probes` (read-side inventory for
+  the next stage). You write the flat files, the driver does the
+  reorganizing — so record EVERY function containing a source call,
+  including the ones you could not feed dynamically.
 - `taint-source-output/probes.json` — the final spec the harness re-runs.
-  Each probe may carry `"expect": "pass"` (default) or `"expect":
-  "unreachable"`; the driver only fails the run when a pass-expected probe
-  does not pass on its fresh-canary re-run.
+  Each probe may carry `"expect": "pass"` (default), `"unreachable"`, or
+  `"unfed"`; the driver fails the run only when a pass-expected probe does
+  not pass, or an unfed-expected probe cannot prove its entry dispatched.
 
 ## Rules
 
@@ -239,7 +266,9 @@ well-shaped request, (2) full `ret_breaks` on the unauthenticated entries,
   fresh canaries and fresh containers, and only genuine evidence survives.
   Ship probes for genuinely unreachable entries with `"expect":
   "unreachable"` — their `no-hit` verdict is harness-verified PROOF of
-  unreachability (a claim in a text file proves nothing).
+  unreachability (a claim in a text file proves nothing). Ship getter and
+  read-only entries with `"expect": "unfed"` + `entry_break` — their
+  dispatch proof is what the next stage needs as read-side inventory.
 - You have a wall-clock budget; when it expires the current state is judged
   as-is. Prioritize: every entry attempted, then full `ret_breaks`, then
   depth.

@@ -4,21 +4,28 @@
 Usage: assemble-functions.py <model-dir> [--verdicts F] [--events F]
 
 Runs as the driver's LAST step, after dynamic verification and the
-call-site write-back. It reorganizes taint-source-output/functions/ from
-flat record files into one folder per containing function, so each
-next-stage agent gets a self-contained working directory:
+call-site write-back. It reorganizes taint-source-output/functions/ into
+the NEXT STAGE's starting-point set — genuinely-RECEIVING functions only:
 
-    functions/<binary__function>/
-        <binary__function>.json   the function record (moved as-is, with
-                                  its verify annotations)
-        probes.json               the probes that exercise THIS function:
-                                  the verbatim request template (the
-                                  proven-good network request format),
-                                  source/entry breaks, ret_breaks,
-                                  per-field canary channel types, the
-                                  driver's final verdict, and which of
-                                  this function's call sites the probe
-                                  verified
+    functions/                  stage-3 starting points: functions with at
+                                least one dynamically-VERIFIED call site
+        INDEX.json              starting_points (verified-site count, the
+                                probes that fed them) + context_only list
+        <binary__function>/
+            <binary__function>.json   the function record (moved as-is,
+                                      with its verify annotations)
+            probes.json               reception_probes — the probes whose
+                                      canary reached THIS function's call
+                                      sites (the proven feeding requests);
+                                      context_probes — probes that reached
+                                      or armed this function without
+                                      feeding it (dispatch context, and
+                                      the READ-SIDE inventory the next
+                                      stage's storage channel needs)
+    functions-context/          every other record: sites never fed by any
+                                canary (state-gated potentials — the
+                                storage-channel / seeding candidates);
+                                same folder shape, same probe view
 
 A probe belongs to a function when (a) its entry_break matches the
 function (the dispatch handler — relation "handler") or (b) any of the
@@ -27,12 +34,17 @@ function's recorded call addresses is armed in the probe's ret_breaks
 does) appear in several folders; it EXECUTES once, so every folder sees
 the same verdict — content and results stay consistent by construction.
 
-Purely mechanical joins over existing artifacts (probes.json, the flat
+Pure getters never own a folder (they hold no taint-source call records);
+they surface only as context_probes — request templates for the read side
+of the setter->storage->getter channel, which belongs to the NEXT stage.
+
+Purely mechanical joins over existing artifacts (probes.json, the
 function records, the merged driver verdicts, the merged events). A
 report, not a gate: exit 0 always; probes mapping to no record are
-reported as orphans.
+reported as orphans. Idempotent: flat records and already-assembled
+folders are both valid inputs, so the step can be re-run in place.
 """
-import argparse, glob, json, os, re, sys
+import argparse, glob, json, os, re, shutil, sys
 
 
 def norm(s):
@@ -80,6 +92,23 @@ def load(path, default=None):
         return default
 
 
+def collect_records(out):
+    """all function records, from flat files or already-assembled folders.
+    Returns [(name, path, current_base)] where base is 'functions' or
+    'functions-context' (None for a flat file under functions/)."""
+    found = {}
+    for base in ("functions", "functions-context"):
+        d = os.path.join(out, base)
+        for p in sorted(glob.glob(os.path.join(d, "*.json"))):
+            if os.path.basename(p) == "INDEX.json":
+                continue
+            found.setdefault(os.path.basename(p)[:-5], (p, base))
+        for p in sorted(glob.glob(os.path.join(d, "*", "*.json"))):
+            if os.path.basename(p) != "probes.json":
+                found.setdefault(os.path.basename(p)[:-5], (p, base))
+    return [(n, p, b) for n, (p, b) in found.items()]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("model")
@@ -89,6 +118,7 @@ def main():
 
     out = os.path.join(args.model, "taint-source-output")
     fndir = os.path.join(out, "functions")
+    ctxdir = os.path.join(out, "functions-context")
 
     spec = load(os.path.join(out, "probes.json"))
     if not isinstance(spec, dict) or not spec.get("probes"):
@@ -121,25 +151,37 @@ def main():
                 verified_by_probe.setdefault(e["probe"], set()).add(call)
                 break
 
-    records = sorted(glob.glob(os.path.join(fndir, "*.json")))
+    records = collect_records(out)
     if not records:
-        sys.exit("[-] no flat function records under functions/ — nothing to assemble")
+        sys.exit("[-] no function records under functions/ or "
+                 "functions-context/ — nothing to assemble")
 
     matched_ids = set()
-    n_handler = n_helper = n_bare = 0
-    for path in records:
+    index = {"starting_points": {}, "context_only": []}
+    n_start = n_ctx = n_handler = n_helper = n_reception = n_bare = 0
+    for name, path, base in records:
         rec = load(path)
         if not rec or not isinstance(rec.get("taint_source_calls"), list):
             continue
-        name = os.path.basename(path)[:-5]
         call_set = {norm(c.get("call_address"))
                     for c in rec["taint_source_calls"]
                     if c.get("call_address")}
+        # classification: the record's own write-back annotations decide;
+        # events are the fallback when no write-back ran (nothing verified
+        # then either, but the probe view still needs per-probe attribution)
+        verified_sites = {norm(c.get("call_address")) for c in
+                          rec["taint_source_calls"]
+                          if c.get("verify") == "verified"}
+        if not verified_sites:
+            for p in probes:
+                verified_sites |= verified_by_probe.get(p.get("id"), set()) & call_set
+        starting = bool(verified_sites)
+
         fn_entry = ent_key(rec.get("function"))
         fn_tail = hex_tail(rec.get("function")) or hex_tail(rec.get("address"))
         fn_addr = norm(rec.get("address")) if rec.get("address") else None
 
-        entries = []
+        reception, context = [], []
         for p in probes:
             pid = p.get("id")
             armed_here = sorted(call_set & {norm(a)
@@ -155,7 +197,8 @@ def main():
                 continue
             matched_ids.add(pid)
             v = verdicts.get(pid) or {}
-            entries.append({
+            fed_here = sorted(verified_by_probe.get(pid, set()) & call_set)
+            view = {
                 "id": pid,
                 "expect": p.get("expect") or "pass",
                 "request": p.get("request"),
@@ -169,30 +212,65 @@ def main():
                 "relation": "handler" if entry_match else "helper",
                 "driver_verdict": v.get("verdict"),
                 "armed_sites_here": armed_here,
-                "verified_sites_here": sorted(
-                    verified_by_probe.get(pid, set()) & call_set),
-            })
+                "verified_sites_here": fed_here,
+            }
+            (reception if fed_here else context).append(view)
             if entry_match:
                 n_handler += 1
             else:
                 n_helper += 1
 
-        folder = os.path.join(fndir, name)
-        os.makedirs(folder, exist_ok=True)
-        json.dump(rec, open(os.path.join(folder, name + ".json"), "w"),
+        target_base = "functions" if starting else "functions-context"
+        target = os.path.join(out, target_base, name)
+        os.makedirs(target, exist_ok=True)
+        json.dump(rec, open(os.path.join(target, name + ".json"), "w"),
                   indent=2, ensure_ascii=False)
-        os.remove(path)
         json.dump({"function": name, "binary": rec.get("binary"),
-                   "probes": entries},
-                  open(os.path.join(folder, "probes.json"), "w"),
+                   "starting_point": starting,
+                   "verified_sites": sorted(verified_sites),
+                   "reception_probes": reception,
+                   "context_probes": context},
+                  open(os.path.join(target, "probes.json"), "w"),
                   indent=2, ensure_ascii=False)
-        if not entries:
+        # remove the SOURCE location: a flat record is foldered in place; a
+        # relocated record takes its whole old folder with it (when both a
+        # flat file and an old folder existed, the writes above already
+        # regenerated the folder's contents)
+        if os.path.isfile(path) \
+                and os.path.dirname(path) == os.path.join(out, base) \
+                and os.path.realpath(path) != os.path.realpath(
+                    os.path.join(target, name + ".json")):
+            os.remove(path)
+        old_dir = os.path.join(out, base, name)
+        if base != target_base and os.path.isdir(old_dir) \
+                and os.path.realpath(old_dir) != os.path.realpath(target):
+            shutil.rmtree(old_dir)
+        if starting:
+            n_start += 1
+            index["starting_points"][name] = {
+                "binary": rec.get("binary"),
+                "verified_sites": len(verified_sites),
+                "reception_probes": len(reception),
+                "context_probes": len(context),
+            }
+        else:
+            n_ctx += 1
+            index["context_only"].append(name)
+        if not (reception or context):
             n_bare += 1
+        if reception:
+            n_reception += 1
+
+    os.makedirs(fndir, exist_ok=True)
+    json.dump(index, open(os.path.join(fndir, "INDEX.json"), "w"),
+              indent=2, ensure_ascii=False)
 
     orphans = sorted(p.get("id") for p in probes
                      if p.get("id") not in matched_ids)
-    print(f"[assemble] {len(records)} function folder(s); "
+    print(f"[assemble] {n_start} starting-point folder(s) under functions/, "
+          f"{n_ctx} under functions-context/; "
           f"{n_handler} handler + {n_helper} helper probe placements; "
+          f"{n_reception} folder(s) with reception probes; "
           f"{n_bare} folder(s) without probes (static-only records)")
     if orphans:
         print(f"[assemble] {len(orphans)} probe(s) map to no function record"

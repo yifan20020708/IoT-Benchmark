@@ -47,17 +47,21 @@
 #      parallel boot chunks (a full-coverage batch cannot fit one boot),
 #      then a repair round re-runs failures on clean boots; only genuine
 #      request->taint-source flows pass. Probes carry "expect": "pass"
-#      (default) | "unreachable"; only pass-expected failures fail the
-#      run (a no-hit on an unreachable-expected probe is harness-verified
-#      PROOF of unreachability)
+#      (default) | "unreachable" | "unfed"; only pass-expected failures
+#      fail the run (a no-hit on an unreachable-expected probe is
+#      harness-verified PROOF of unreachability; an unfed-expected probe
+#      must prove its entry dispatched — reception-negative is not unproven)
 #   5. write-back: every function record's call sites get a dynamic verify
 #      status (verified | reached-unfed | not-reached | not-attempted) and
 #      taint-source-output/verified-callsites.json is written
 #   6. assemble: the flat function records are reorganized into
-#      functions/<binary__function>/ folders, each holding the record plus
-#      probes.json (the probes exercising that function, with their
-#      verdicts and per-field canary channel types) — the next stage
-#      dispatches one agent per function folder
+#      functions/<binary__function>/ folders (genuinely-RECEIVING functions
+#      only — >=1 dynamically-verified call site — the next stage's
+#      starting points, indexed by functions/INDEX.json) plus
+#      functions-context/ for the rest; each folder holds the record and
+#      probes.json split into reception_probes (fed this function's sites)
+#      and context_probes (reached/armed without feeding — read-side
+#      inventory for the next stage's storage channel)
 #   status: success | agent_timeout | agent_error | fail
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1   # no __pycache__ anywhere in the pipeline
@@ -325,9 +329,12 @@ if probes is not None:
             for k in ("id", "request", "source_break"):
                 if not p.get(k):
                     errors.append(f"probes.json: probe[{i}] missing {k}")
-            if p.get("expect") not in (None, "pass", "unreachable"):
+            if p.get("expect") not in (None, "pass", "unreachable", "unfed"):
                 errors.append(f"probes.json: probe[{i}] 'expect' must be "
-                              f"'pass' or 'unreachable'")
+                              f"'pass', 'unreachable' or 'unfed'")
+            if p.get("expect") == "unfed" and not p.get("entry_break"):
+                errors.append(f"probes.json: probe[{i}] expect 'unfed' "
+                              f"requires 'entry_break' (dispatch proof)")
         # entry coverage (the full-dynamic contract): every entry of the
         # PROBED binary must be attempted — entry_break on its handler, or
         # its endpoint AND key present in some probe's request. Entries of
@@ -456,6 +463,7 @@ probe_entry = {p.get("id"): ent_key(p.get("entry_break"))
                for p in probe_list if p.get("entry_break")}
 probe_outcomes = {r.get("probe"): r.get("verdict")
                   for r in verdicts.get("probes", [])}
+probe_records = {r.get("probe"): r for r in verdicts.get("probes", [])}
 
 # ---- per-call-site dynamic status from the DRIVER's own re-run -----------
 # Primary source: the ret_hit EVENTS themselves — a site is 'verified' only
@@ -557,12 +565,20 @@ if verdicts:
               indent=2, ensure_ascii=False)
 
 # ---- verdict: only pass-EXPECTED failures fail the run; a no-hit on an
-# unreachable-expected probe is harness-verified proof of unreachability
+# unreachable-expected probe is harness-verified proof of unreachability;
+# an unfed-expected probe must still prove its entry DISPATCHED (reception-
+# negative ≠ unproven: the claim "reachable but not fed" needs both halves)
 expected_fail = sorted(pid for pid, exp in probe_expect.items()
                        if exp == "pass" and probe_outcomes.get(pid) != "pass")
 unreachable_proved = sorted(pid for pid, exp in probe_expect.items()
                             if exp == "unreachable"
                             and probe_outcomes.get(pid) == "no-hit")
+unfed_fail = sorted(pid for pid, exp in probe_expect.items()
+                    if exp == "unfed" and not (
+                        probe_outcomes.get(pid) == "pass"
+                        or (probe_outcomes.get(pid) in ("no-canary", "no-hit")
+                            and (probe_records.get(pid) or {})
+                            .get("entry_verified"))))
 
 reasons = []
 if agent_rc != 0:
@@ -578,13 +594,16 @@ elif not verdicts:
 elif expected_fail:
     reasons.append(f"{len(expected_fail)} expected-pass probe(s) failed: "
                    + ", ".join(expected_fail[:10]))
+elif unfed_fail:
+    reasons.append(f"{len(unfed_fail)} unfed-expected probe(s) failed "
+                   f"dispatch proof: " + ", ".join(unfed_fail[:10]))
 if unattempted:
     reasons.append(f"{len(unattempted)} entries not attempted by any probe")
 if unarmed:
     reasons.append(f"{len(unarmed)} call sites not armed in any probe")
 
 success = (validate_rc == 0 and verdicts and verify_rc is not None
-           and verify_rc != 2 and not expected_fail
+           and verify_rc != 2 and not expected_fail and not unfed_fail
            and not unattempted and not unarmed)
 if success:
     status = "success"
@@ -617,8 +636,10 @@ result = {
         "probes": probe_outcomes,
         "probes_expected_pass": sum(1 for v in probe_expect.values()
                                     if v == "pass"),
+        "probes_unfed": sum(1 for v in probe_expect.values() if v == "unfed"),
         "probes_pass": sum(1 for v in probe_outcomes.values() if v == "pass"),
         "expected_pass_failures": expected_fail,
+        "unfed_failures": unfed_fail,
         "unreachable_proved": unreachable_proved,
     },
     "coverage": {
