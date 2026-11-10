@@ -13,26 +13,57 @@ Driven entirely by environment variables (set by the driver):
                   canary by EQUALITY with argument/return register values
                   (numeric request fields parsed into integers can never
                   surface a string canary)
+  TPROBE_ARM_MARKER  optional path — DEFERRED ARMING: the guest boots at
+                  NATIVE speed with zero breakpoints (QEMU's -s -S leaves
+                  the CPU frozen; the recorder's first `continue` releases
+                  it). When the driver has confirmed the web service
+                  answers it touches the marker file and SIGINTs this gdb
+                  process: `continue` returns (auto-continued breakpoint
+                  stops never surface there), the marker is seen, ALL
+                  breakpoints are armed, and the send phase runs fully
+                  instrumented. Nothing that happened before arming is
+                  observable — but canaries only exist after the first
+                  send, so no evidence is lost; what IS lost is the boot-
+                  phase breakpoint grind that starved the guest. Without
+                  this variable breakpoints arm before boot (legacy).
+  TPROBE_HIT_BUDGET  per-breakpoint canary-less stop budget (default 2000;
+                  0 disables). Some guests poll their own web service
+                  (~7/s) and some handlers loop over one call site
+                  thousands of times; every stop costs register reads +
+                  a memory scan, and both storms starve the guest CPU
+                  while carrying zero canary evidence. A site whose stops
+                  keep matching no canary of ANY probe trips the budget
+                  and is disabled (logged as `site_disabled`); a stop
+                  that does carry a canary resets the counter, so sites
+                  shared by real probe traffic survive.
+  TPROBE_HIT_RATE    burst rule: a site whose last TPROBE_HIT_RATE (default
+                  40) canary-less stops all landed within 2 seconds is a
+                  loop — disable immediately (0 disables). Distinguishes
+                  a ~7/s self-poll (survives: 40 stops span ~6s) from a
+                  loop storm (dies within ~0.4s).
 
 A PURE RECORDER: every breakpoint auto-continues (stop() -> False) and
-logs an event; the host-side driver owns all timing (web wait, request
-sends, teardown, kill). All breakpoints are armed statically BEFORE the
-firmware boots (QEMU's -s -S leaves the CPU frozen at reset; QEMU
-gdbstub breakpoints are VM-level, so pre-load symbol breakpoints are
-safe), then a single `continue` runs until the driver kills gdb.
+logs an event; the host-side driver owns all timing (web wait, arm
+handshake, request sends, teardown, kill). The single `continue` blocks
+until the target really stops (SIGINT / target death); breakpoint stops
+auto-continue inside it. The driver kills gdb at teardown.
 
 Event kinds (one JSON object per line, each with a unix timestamp):
-  armed        breakpoints armed, architecture detected
-  source_hit   taint-source function entered: caller pc (= the call site,
-               the return address of that call), argument registers, the
-               string each argument points at, canary matches in the
-               argument buffers
-  entry_hit    entry/handler function entered (dispatch proof)
-  ret_hit      return site of a call hit: return register + its string +
-               canary matches (the strongest proof: the accessor RETURNED
-               attacker data)
-  bp_error     a symbol failed to resolve (probe continues without it)
-  error        internal recorder error (never fatal to the session)
+  armed         breakpoints armed (phase: "boot" | "send-start"),
+                architecture, budget config
+  site_disabled a breakpoint tripped its canary-less budget and was
+                disabled — later silence at that site is explained by
+                this event, not by the target going quiet
+  source_hit    taint-source function entered: caller pc (= the call site,
+                the return address of that call), argument registers, the
+                string each argument points at, canary matches in the
+                argument buffers
+  entry_hit     entry/handler function entered (dispatch proof)
+  ret_hit       return site of a call hit: return register + its string +
+                canary matches (the strongest proof: the accessor RETURNED
+                attacker data)
+  bp_error      a symbol failed to resolve (probe continues without it)
+  error         internal recorder error (never fatal to the session)
 
 Register tables cover the corpus architectures (ARM/MIPS/AARCH64); unknown
 architectures log a fatal event and leave the log empty.
@@ -40,7 +71,6 @@ architectures log a fatal event and leave the log empty.
 
 import json
 import os
-import re
 import time
 
 import gdb
@@ -50,9 +80,20 @@ LOG_PATH = os.environ["TPROBE_LOG"]
 BRIDGE = os.environ["TPROBE_BRIDGE"]
 BINARY = os.environ["TPROBE_BINARY"]
 CANARIES = json.loads(os.environ.get("TPROBE_CANARIES", "{}"))
+ARM_MARKER = os.environ.get("TPROBE_ARM_MARKER", "")
 
 PROBES = SPEC.get("probes", [])
-RET_BREAKS = []  # (probe_id, call_site_int) — armed at call + arch delay
+
+
+def _int_env(name, default):
+    try:
+        return int(os.environ.get(name) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+BUDGET = _int_env("TPROBE_HIT_BUDGET", 2000)
+RATE = _int_env("TPROBE_HIT_RATE", 40)
 
 ARCH_TABLE = {
     "arm":     {"args": ["$r0", "$r1", "$r2", "$r3"], "ret": "$r0",
@@ -118,7 +159,50 @@ def canary_int_hits(value):
                   if isinstance(can, dict) and can.get("int") == value)
 
 
-class SourceBP(gdb.Breakpoint):
+class BudgetBP:
+    """canary-less stop budget shared by all breakpoint kinds.
+
+    Counts consecutive stops that matched no canary of any probe; a
+    canary-bearing stop resets the counter (shared accessor sites live).
+    Two trip rules: cumulative (TPROBE_HIT_BUDGET) and burst
+    (TPROBE_HIT_RATE stops within 2s — the loop signature). Tripping
+    disables the breakpoint and logs `site_disabled`."""
+
+    def _budget_tick(self, hits, kind, where):
+        try:
+            if hits:  # a canary-bearing stop resets both rules
+                self._miss = 0
+                self._stamps = []
+                return
+            if BUDGET <= 0 and RATE <= 0:
+                return
+            # per-INSTANCE state (never class attributes: a class-level
+            # list would be shared by every breakpoint and trip spuriously)
+            miss = getattr(self, "_miss", 0) + 1
+            self._miss = miss
+            stamps = getattr(self, "_stamps", None)
+            if stamps is None:
+                stamps = self._stamps = []
+            now = time.time()
+            stamps.append(now)
+            if RATE > 0:
+                if len(stamps) > RATE:
+                    stamps.pop(0)
+                if len(stamps) == RATE and now - stamps[0] <= 2.0:
+                    self._site_disable(kind, where, "burst")
+                    return
+            if BUDGET > 0 and miss >= BUDGET:
+                self._site_disable(kind, where, "cumulative")
+        except Exception as e:  # budget must never break recording
+            log({"event": "error", "where": "budget", "msg": str(e)})
+
+    def _site_disable(self, kind, where, rule):
+        self.enabled = False
+        log({"event": "site_disabled", "kind": kind, "rule": rule,
+             "misses": self._miss, "budget": BUDGET, "rate": RATE, **where})
+
+
+class SourceBP(BudgetBP, gdb.Breakpoint):
     """taint-source or entry function: log the invocation, auto-continue."""
 
     def __init__(self, symbol, role):
@@ -156,17 +240,20 @@ class SourceBP(gdb.Breakpoint):
                     if pid not in ev["canary_hits"]:
                         ev["canary_hits"].append(pid)
             log(ev)
+            self._budget_tick(ev["canary_hits"], self.role,
+                              {"symbol": self.symbol})
         except Exception as e:  # never break the recording session
             log({"event": "error", "where": "SourceBP.stop", "msg": str(e)})
         return False
 
 
-class RetSiteBP(gdb.Breakpoint):
+class RetSiteBP(BudgetBP, gdb.Breakpoint):
     """statically-armed return site of a specific call: ret register proof."""
 
-    def __init__(self, probe_id, address):
+    def __init__(self, probe_id, call_site, address):
         super().__init__(address)
         self.probe_id = probe_id
+        self.call_site = call_site  # original spec value, for reporting
 
     def stop(self):
         try:
@@ -185,6 +272,9 @@ class RetSiteBP(gdb.Breakpoint):
                         hits.append(pid)
             ev["canary_hits"] = sorted(hits)
             log(ev)
+            self._budget_tick(ev["canary_hits"], "ret",
+                              {"probe": self.probe_id,
+                               "call_site": self.call_site})
         except Exception as e:
             log({"event": "error", "where": "RetSiteBP.stop", "msg": str(e)})
         return False
@@ -209,32 +299,64 @@ def main():
         return
     ARCH = ARCH_TABLE[arch]
 
-    armed = []
-    symbols = {p["source_break"]: "source" for p in PROBES if p.get("source_break")}
-    for p in PROBES:
-        if p.get("entry_break"):
-            symbols.setdefault(p["entry_break"], "entry")
-    for symbol, role in symbols.items():
-        try:
-            SourceBP(symbol, role)
-            armed.append(symbol)
-        except Exception as e:
-            log({"event": "bp_error", "symbol": symbol, "msg": str(e)})
-
-    ret_sites = 0
-    for p in PROBES:
-        for cs in p.get("ret_breaks", []):
+    def arm_all(phase):
+        armed = []
+        symbols = {p["source_break"]: "source" for p in PROBES if p.get("source_break")}
+        for p in PROBES:
+            if p.get("entry_break"):
+                symbols.setdefault(p["entry_break"], "entry")
+        for symbol, role in symbols.items():
             try:
-                site = int(cs, 16) + ARCH["ret_delay"]  # call site -> return site
-                RetSiteBP(p["id"], "*0x%x" % site)
-                ret_sites += 1
+                SourceBP(symbol, role)
+                armed.append(symbol)
             except Exception as e:
-                log({"event": "bp_error", "symbol": cs, "msg": str(e)})
+                log({"event": "bp_error", "symbol": symbol, "msg": str(e)})
 
-    log({"event": "armed", "arch": arch, "symbols": armed,
-         "ret_sites": ret_sites, "probes": len(PROBES)})
-    gdb.execute("continue")
-    # normally unreachable: the driver kills gdb while `continue` runs
+        ret_sites = 0
+        for p in PROBES:
+            for cs in p.get("ret_breaks", []):
+                try:
+                    site = int(cs, 16) + ARCH["ret_delay"]  # call site -> return site
+                    RetSiteBP(p["id"], cs, "*0x%x" % site)
+                    ret_sites += 1
+                except Exception as e:
+                    log({"event": "bp_error", "symbol": cs, "msg": str(e)})
+
+        log({"event": "armed", "phase": phase, "arch": arch,
+             "symbols": armed, "ret_sites": ret_sites,
+             "probes": len(PROBES), "budget": BUDGET, "rate": RATE})
+
+    if ARM_MARKER:
+        # deferred arming: release the frozen CPU, boot the guest at native
+        # speed with NO breakpoints, and wait for the driver's SIGINT +
+        # marker handshake (web service confirmed up) before arming
+        log({"event": "deferred", "marker": ARM_MARKER,
+             "budget": BUDGET, "rate": RATE})
+        armed_done = False
+        while True:
+            try:
+                gdb.execute("continue")
+            except gdb.error as e:
+                log({"event": "gdb-exit", "why": str(e)})
+                return
+            # `continue` returned: the target REALLY stopped (a driver
+            # SIGINT; auto-continued breakpoint stops never surface here)
+            if not armed_done and os.path.exists(ARM_MARKER):
+                arm_all("send-start")
+                armed_done = True
+            else:
+                log({"event": "stray-stop", "armed": armed_done})
+            # loop back into `continue` (main() must never return while the
+            # session lives: -batch would exit gdb and end the recording)
+    else:
+        # legacy: arm everything while the CPU is frozen at reset, then one
+        # `continue` runs the whole session under full instrumentation
+        arm_all("boot")
+        try:
+            gdb.execute("continue")
+        except gdb.error as e:
+            log({"event": "gdb-exit", "why": str(e)})
+            return
     log({"event": "gdb-exit"})
 
 

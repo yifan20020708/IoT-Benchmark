@@ -114,6 +114,12 @@ def main():
                                  for x in recs),
                "canary_param_match": any(x["r"].get("canary_param_match")
                                          for x in recs),
+               "budget_disabled_ret_sites": max(
+                   (x["r"].get("budget_disabled_ret_sites") or 0)
+                   for x in recs),
+               "budget_disabled_symbols": max(
+                   (x["r"].get("budget_disabled_symbols") or 0)
+                   for x in recs),
                "canary_evidence": chosen.get("canary_evidence") or [],
                "return_evidence": chosen.get("return_evidence") or [],
                "request_sent_at": min(

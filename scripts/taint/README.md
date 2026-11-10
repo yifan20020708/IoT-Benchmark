@@ -63,9 +63,22 @@ then re-proves the agent's claims with its own canaries.
   accessors like `cJSON_GetInt` can never surface a string canary). The
   agent cannot pre-plant evidence for a value it has not seen; the driver's
   final re-run uses fresh canaries anyway.
+- **Send-start arming and storm budgets.** The recorder attaches while the
+  CPU is frozen, releases it (native-speed boot, no breakpoints), and arms
+  every breakpoint only when the first request is about to send (a marker
+  + SIGINT handshake with the driver). Canaries only exist after the first
+  send, so no evidence is lost — what disappears is the boot-phase
+  breakpoint grind. During the send phase a per-site canary-less budget
+  (cumulative 2000, burst 40-in-2s — canary-bearing hits reset it) disables
+  storming sites: guests that poll their own web service and handlers that
+  loop over one call site cost a register-read + memory-scan stop each and
+  otherwise starve the guest CPU. Disabled sites log `site_disabled`, and
+  each probe's verdict record reports how many of its sites were disabled.
 - **Parallel boot chunks.** A full-coverage batch (every entry, every call
-  site armed) cannot run in one boot — the armed breakpoints also sit on
-  the guest's own init path and grind it. The driver's re-run splits the
+  site armed) still cannot run in one boot: a wedge module stops answering
+  and starves the rest of its chunk, some probes mutate login/config state,
+  and storm-budget-disabled sites only reset on a fresh boot. The driver's
+  re-run splits the
   spec into chunks (the agent may set a top-level `"chunks": <int>` in
   probes.json), one boot each, all in parallel; per-probe distinct,
   per-run fresh canary values make cross-chunk contamination impossible.
@@ -113,12 +126,12 @@ then re-proves the agent's claims with its own canaries.
 | `frontend-keywords.py` | whole-rootfs frontend file scan by suffix (markup/script/data), per-type parsers, 5 keyword buckets with counts/origins/files; client-side template blocks (`<script type="text/template">`, content-detected) are re-parsed as markup — their form vocabulary is invisible to the outer parse | pure suffix + generic web parsing; zero vendor constants |
 | `ghidra-index.sh` (+ `IndexExporter.java`) | one-shot Ghidra headless analysis → per-function xref index (strings, call edges with args, decompiled text calls with resolved arithmetic); project cached under `taint-source/ghidra-projects/`; callers sorted for byte-reproducibility | architecture-neutral; 3 unioned evidence paths covering the ARM PIC (`DAT_x ± 0xCONST`) and the MIPS GOT/ELF-DYN (`PTR_lbl_slot ± 0xCONST`, `(*(code *)PTR_x)(...)`) idioms; big-endian validated |
 | `taint-query.py` | query layer over the index: `callsites`, `strings-in`, `xrefs`, `callers`, `fn`, `colocate`, `list` | pure queries; `colocate` ranks candidates, never decides |
-| `verify-request.sh` | deterministic dynamic verifier: fresh lab container → `emu boot` (CPU frozen, gdbstub 0.0.0.0:1234) → host gdb-multiarch recorder → send probes → verdicts; two canary channels (`{{CANARY}}` string, `{{CANARY_INT}}` register-equality); one spec = one boot; `--workdir` lets a batch driver own the artifact layout | probe content entirely agent-authored; arch table is ABI facts (arm/aarch64/mips) |
+| `verify-request.sh` | deterministic dynamic verifier: fresh lab container → `emu boot` (CPU frozen, gdbstub 0.0.0.0:1234) → host gdb-multiarch recorder (native-speed boot, breakpoints armed at send-start via marker+SIGINT handshake) → send probes → verdicts; two canary channels (`{{CANARY}}` string, `{{CANARY_INT}}` register-equality); one spec = one boot; `--workdir` lets a batch driver own the artifact layout | probe content entirely agent-authored; arch table is ABI facts (arm/aarch64/mips) |
 | `verify-batch.sh` | two-phase parallel re-verification of a full spec: chunk split → parallel boots (semaphore `--max-parallel`) → send-timing slow-zone analysis → repair round (victims on clean boots, wedge suspects isolated alone); merged verdicts keep the single-run schema | policy purely mechanical (spec order, curl jar semantics, 15s send-gap threshold); chunk count from `--chunks` / spec `chunks` hint / ceil(n/32) |
 | `chunk-probes.py` | order-preserving spec splitter with session-bootstrap replication (the `-c` jar writer moved/copied to every reader chunk's front); `--isolate` gives listed probes a boot each; usable by the agent for its own big batches | generic curl semantics only |
 | `merge-verdicts.py` | merges per-chunk verdicts/events pass-if-any (value-based canary attribution — chunks cannot cross-contaminate) and computes the repair analysis (failed / suspects / victims from send timings) | — |
 | `assemble-functions.py` | last driver step: splits records into `functions/` (genuinely-receiving: ≥1 verified call site — the next stage's starting points, indexed in `functions/INDEX.json`) and `functions-context/` (unfed potentials); each folder's probes.json separates `reception_probes` (fed this function's sites) from `context_probes` (read-side inventory); a probe appears in every folder it serves but executes once, so verdicts are consistent by construction; idempotent, re-runnable in place | pure joins over existing artifacts; reports orphan probes |
-| `gdb-recorder.py` | GDB-side passive recorder driven by env vars; every breakpoint auto-continues, logs `source_hit`/`entry_hit`/`ret_hit` events with canary matches (string scan in buffers + int register equality) | register tables per ABI; nothing firmware-specific |
+| `gdb-recorder.py` | GDB-side passive recorder driven by env vars; every breakpoint auto-continues, logs `source_hit`/`entry_hit`/`ret_hit` events with canary matches (string scan in buffers + int register equality); deferred arming (TPROBE_ARM_MARKER: boot native, arm on the driver's SIGINT) and a per-site canary-less storm budget (TPROBE_HIT_BUDGET / TPROBE_HIT_RATE → `site_disabled`) | register tables per ABI; nothing firmware-specific |
 | `taint-run.sh` | task driver: lock → clean outputs → host-side agent under watchdog → schema validation + index cross-check → fresh-canary re-verification → `taint-run/taint-result.json` | — |
 | `taint-prompt.md` | the agent's mission brief (stages, tool contracts, output schemas, rules) | — |
 

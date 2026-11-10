@@ -43,8 +43,9 @@ to confirm with the decompiled code.
   `.json` name, and `json.load` will fail).
 - `verify-request.sh <model-dir> <spec.json>` — DYNAMIC proof that a request
   parameter reaches a taint source, on the solved emulation (fresh container,
-  `emu boot` frozen + gdbstub, gdb-multiarch breakpoints armed before boot,
-  canary injected into your request template). It owns the verdict:
+  `emu boot` + gdbstub; the guest boots at native speed and breakpoints arm
+  just before your first request; canary injected into your request
+  template). It owns the verdict:
   `pass` (canary observed in the taint source's arguments/return value) |
   `no-canary` (source ran, canary absent) | `no-hit` (source never ran).
   exit 0 = all probes pass. See its header for the spec format.
@@ -196,8 +197,11 @@ boot ≈ 1–2 min, probes are batched per boot (many probes, one run; raise
   FRESH canaries after you exit, and only genuine evidence passes that
   re-run.
 - The harness's re-verification runs your probes.json in PARALLEL BOOT
-  CHUNKS (one boot cannot carry a full-coverage batch: hundreds of armed
-  breakpoints also sit on the guest's own init path and grind it). An
+  CHUNKS (one boot cannot carry a full-coverage batch: a wedge module that
+  stops answering starves the rest of its chunk, some probes mutate
+  login/config state for everything after them, and a storming site — a
+  guest self-poll or a handler loop — exhausts its canary-less stop budget
+  and goes quiet; a fresh boot resets all three). An
   optional top-level `"chunks": <int>` field in probes.json sets the chunk
   count (default ceil(n/32); your probe ORDER is preserved within each
   chunk, and every chunk re-bootstraps its own session). Order probes so
