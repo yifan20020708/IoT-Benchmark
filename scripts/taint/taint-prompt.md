@@ -243,6 +243,10 @@ well-shaped request, (2) full `ret_breaks` on the unauthenticated entries,
 - You have a wall-clock budget; when it expires the current state is judged
   as-is. Prioritize: every entry attempted, then full `ret_breaks`, then
   depth.
+- If you run python with `-I` on firmware-derived data (good practice — it
+  is untrusted), pair it with `-B`: isolated mode ignores
+  `PYTHONDONTWRITEBYTECODE` and would otherwise litter `__pycache__` into
+  the model folder.
 
 Work autonomously. Finish when the map is complete and verified, or when you
 have exhausted well-reasoned approaches.

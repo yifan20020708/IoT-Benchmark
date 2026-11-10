@@ -565,6 +565,8 @@ unreachable_proved = sorted(pid for pid, exp in probe_expect.items()
                             and probe_outcomes.get(pid) == "no-hit")
 
 reasons = []
+if agent_rc != 0:
+    reasons.append(f"agent exited rc={agent_rc} (see agent.log)")
 if validate_rc != 0:
     reasons.append("schema validation failed")
 if verify_rc is None:
@@ -649,6 +651,13 @@ echo "[*] assembling per-function folders..."
 python3 "$SCRIPTS/assemble-functions.py" "$MODEL" \
     --verdicts "$RUNDIR/verify-verdicts.json" \
     --events "$MODEL/taint-source/verify/driver-probes/events.jsonl" || true
+
+# ---- bytecode sweep ------------------------------------------------------------
+# the agent may legitimately run `python3 -I` on firmware-derived data (isolated
+# mode ignores PYTHONDONTWRITEBYTECODE), so __pycache__ can appear in its work
+# dir despite the export; the DELIVERED state is swept deterministically
+find "$MODEL/taint-source" "$MODEL/taint-source-output" \
+    -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
 
 # ---- summary --------------------------------------------------------------------
 STATUS=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["status"])' "$RUNDIR/taint-result.json")
