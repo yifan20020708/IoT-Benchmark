@@ -37,7 +37,10 @@ to confirm with the decompiled code.
   `strings-in <fn>`, `xrefs <string>`, `callers <fn>`, `fn <fn>`,
   `colocate --keywords F [--top N]` (functions ranked by frontend-keyword
   co-location — the wrapped-source candidate detector), `list [--prefix P]`.
-  Functions match by name or `name@address`.
+  Functions match by name or `name@address`. Output is HUMAN-READABLE text
+  by default; pass `--json` when a script of yours will machine-parse it
+  (redirecting default output into a `.json` file gives you text in a
+  `.json` name, and `json.load` will fail).
 - `verify-request.sh <model-dir> <spec.json>` — DYNAMIC proof that a request
   parameter reaches a taint source, on the solved emulation (fresh container,
   `emu boot` frozen + gdbstub, gdb-multiarch breakpoints armed before boot,
