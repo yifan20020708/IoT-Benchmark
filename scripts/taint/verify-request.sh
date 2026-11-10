@@ -3,7 +3,7 @@
 # (the hverify counterpart of the taint stage)
 #
 # Usage: verify-request.sh [--keep] [--budget S] [--image IMG] [--out F]
-#                          <model-dir> <spec.json>
+#                          [--workdir D] <model-dir> <spec.json>
 #
 # Proves, on the harness-verified emulation of a SOLVED task, that network
 # request parameters are actually received by the identified intermediate
@@ -66,12 +66,14 @@ WEBWAIT=300         # max seconds waiting for the web service
 EVIDWAIT=120        # max seconds waiting for probe evidence after requests
 IMAGE=""
 OUT=""
+WORKDIR=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --keep)    KEEP=1; shift ;;
         --budget)  BUDGET="$2"; shift 2 ;;
         --image)   IMAGE="$2"; shift 2 ;;
         --out)     OUT="$2"; shift 2 ;;
+        --workdir) WORKDIR="$2"; shift 2 ;;
         -h|--help) sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) break ;;
     esac
@@ -88,8 +90,13 @@ VENDOR=$(basename "$(dirname "$MODEL")")
 MODELNAME=$(basename "$MODEL")
 TASK_ID=$(printf '%s__%s' "$VENDOR" "$MODELNAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g')
 IMAGE="${IMAGE:-task-$TASK_ID:solved}"
-CONTAINER="taint-verify-$TASK_ID"
-WORK="$MODEL/taint-source/verify/$STEM"
+# container name carries the spec stem: concurrent runs of different specs
+# (parallel batch splits, driver re-run next to agent self-checks) each get
+# their own container instead of docker rm -f'ing each other
+CONTAINER="taint-verify-$TASK_ID-$(printf '%s' "$STEM" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g')"
+# --workdir overrides the default work dir (taint-source/verify/<stem>):
+# batch drivers (verify-batch.sh) keep their per-chunk artifacts together
+WORK="${WORKDIR:-$MODEL/taint-source/verify/$STEM}"
 mkdir -p "$WORK"
 
 RUN_START=$(date +%s)
@@ -214,14 +221,21 @@ else
 fi
 
 # ---- send the probes ---------------------------------------------------------
-python3 - "$SPEC" "$WORK" "$CONTAINER" "$GUEST_IP" <<'EOF'
+# the send loop is also budget-capped now: a batch driver re-runs skipped
+# probes in its repair round, so a wedged tail cannot burn unbounded time
+python3 - "$SPEC" "$WORK" "$CONTAINER" "$GUEST_IP" "$deadline" <<'EOF'
 import json, os, subprocess, sys, time
 spec, work, ctr, guest_ip = sys.argv[1:5]
+deadline = float(sys.argv[5]) if len(sys.argv) > 5 and sys.argv[5] else 0.0
 spec = json.load(open(spec))
 canaries = json.load(open(os.path.join(work, "canaries.json")))
 sends = {}
 for p in spec["probes"]:
     can = canaries[p["id"]]
+    if deadline and time.time() > deadline:
+        sends[p["id"]] = {"skipped": "budget"}
+        print(f"[verify] probe {p['id']}: SKIPPED (budget exhausted)")
+        continue
     argv = [a.replace("{{GUEST_IP}}", guest_ip)
              .replace("{{CANARY}}", can["string"])
              .replace("{{CANARY_INT}}", str(can["int"]))

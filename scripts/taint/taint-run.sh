@@ -19,13 +19,15 @@
 #   INPUT  : <model>/task.json, <model>/rootfs/, solved image, $ROOT/.env,
 #            scripts/taint/{taint-prompt.md,frontend-keywords.py,
 #            ghidra-index.sh,IndexExporter.java,taint-query.py,
-#            verify-request.sh,gdb-recorder.py}
+#            verify-request.sh,gdb-recorder.py,
+#            verify-batch.sh,chunk-probes.py,merge-verdicts.py,
+#            assemble-functions.py}
 #   AGENT  : writes <model>/taint-source/ (intermediates; the Ghidra project
 #            cache survives re-runs — it is deterministic per binary) and
 #            <model>/taint-source-output/ (summary.json, functions/*.json,
 #            probes.json)
 #   OUTPUT : <model>/taint-run/  — agent.log, agent-transcripts.tar,
-#            validation.json, verify-verdicts.json, result.json
+#            validation.json, verify-verdicts.json, taint-result.json
 #            <model>/taint-source-output/verified-callsites.json — the
 #            driver's own dynamic-verification result (fresh canaries)
 #   EXIT   : 0 = success; 1 = anything else
@@ -39,16 +41,23 @@
 #      key in a request), and every recorded call site of the probed
 #      binary must be armed in some probe's ret_breaks — unattempted
 #      entries or unarmed sites fail the run
-#   4. INDEPENDENT re-run of verify-request.sh on the agent's probes.json
-#      with fresh canaries and a fresh container (from a driver-named spec
-#      copy, so the agent's own self-check evidence is never clobbered) —
-#      only genuine request->taint-source flows pass. Probes carry
-#      "expect": "pass" (default) | "unreachable"; only pass-expected
-#      failures fail the run (a no-hit on an unreachable-expected probe is
-#      harness-verified PROOF of unreachability)
+#   4. INDEPENDENT re-run of the agent's probes.json with fresh canaries
+#      (from a driver-named spec copy, so the agent's own self-check
+#      evidence is never clobbered) — verify-batch.sh splits the spec into
+#      parallel boot chunks (a full-coverage batch cannot fit one boot),
+#      then a repair round re-runs failures on clean boots; only genuine
+#      request->taint-source flows pass. Probes carry "expect": "pass"
+#      (default) | "unreachable"; only pass-expected failures fail the
+#      run (a no-hit on an unreachable-expected probe is harness-verified
+#      PROOF of unreachability)
 #   5. write-back: every function record's call sites get a dynamic verify
 #      status (verified | reached-unfed | not-reached | not-attempted) and
 #      taint-source-output/verified-callsites.json is written
+#   6. assemble: the flat function records are reorganized into
+#      functions/<binary__function>/ folders, each holding the record plus
+#      probes.json (the probes exercising that function, with their
+#      verdicts and per-field canary channel types) — the next stage
+#      dispatches one agent per function folder
 #   status: success | agent_timeout | agent_error | fail
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1   # no __pycache__ anywhere in the pipeline
@@ -162,6 +171,22 @@ model, rundir = sys.argv[1:3]
 out = os.path.join(model, "taint-source-output")
 errors = []
 
+# The validator's whole job is judging MALFORMED agent output, so dying on
+# it — and skipping validation.json — is its worst failure mode: the real
+# schema errors get swallowed and result.json's validation block stays
+# empty (exactly what the W30E attempt-4 postmortem showed). Last-resort
+# net: an uncaught crash becomes a reported finding, partial errors kept.
+def _crash_hook(exc_type, exc, tb):
+    import traceback
+    json.dump({"schema_ok": False,
+               "errors": errors + [
+                   "validation crashed on agent output: "
+                   + "".join(traceback.format_exception_only(exc_type, exc)).strip()],
+               "crash_traceback": traceback.format_tb(tb, limit=6)},
+              open(os.path.join(rundir, "validation.json"), "w"), indent=2)
+    sys.exit(1)
+sys.excepthook = _crash_hook
+
 def load(path, what):
     try:
         return json.load(open(path))
@@ -209,7 +234,9 @@ if summary is not None:
             continue
         # the index path is REQUIRED: it is the cross-check table for every
         # call address the agent records downstream
-        if not b.get("index") or not os.path.isfile(os.path.join(model, b["index"])):
+        idx_rel = b.get("index")
+        if not idx_rel or not isinstance(idx_rel, str) \
+                or not os.path.isfile(os.path.join(model, idx_rel)):
             errors.append(f"boundary binary entry missing/invalid 'index': {b.get('path')}")
             continue
         counts["boundary_binaries"] += 1
@@ -229,21 +256,27 @@ if summary is not None:
 indexes = {}   # binary path -> {call addresses (normalized), function names}
 for b in (summary or {}).get("boundary_binaries", []):
     rel = b.get("index")
-    if not rel:
+    if not rel or not isinstance(rel, str):
         continue
     idx = load(os.path.join(model, rel), f"index of {b['path']}")
     if idx is None:
         continue
     sites = set()
     fns = set()
-    for f in idx.get("functions", []):
-        fns.add(f["name"])
-        for cs in f.get("call_sites", []):
-            if cs.get("address"):
+    funcs = idx.get("functions") or []
+    if not isinstance(funcs, list):
+        errors.append(f"index of {b.get('path')}: 'functions' must be a list")
+        funcs = []
+    for f in funcs:
+        if not isinstance(f, dict):
+            continue
+        fns.add(f.get("name"))
+        for cs in f.get("call_sites") or []:
+            if isinstance(cs, dict) and cs.get("address"):
                 sites.add(norm_addr(cs["address"]))
-    indexes[b["path"]] = {"sites": sites, "functions": fns}
+    indexes[b.get("path")] = {"sites": sites, "functions": fns}
 
-source_names = {(s["binary"], s["function"])
+source_names = {(s.get("binary"), s.get("function"))
                 for s in (summary or {}).get("taint_sources", [])}
 records = []
 for path in sorted(glob.glob(os.path.join(out, "functions", "*.json"))):
@@ -365,16 +398,23 @@ if [ "$VALIDATE_RC" = 0 ]; then
     cp "$MODEL/taint-source-output/probes.json" "$RUNDIR/driver-probes.json"
     VERIFY_RC=0
     # a full-coverage batch (one probe per entry, every ret_break armed) is
-    # far bigger than an interactive self-check run
-    bash "$SCRIPTS/verify-request.sh" \
-        --budget 3600 \
+    # far bigger than ONE boot can carry: hundreds of armed breakpoints
+    # also sit on the guest's own init path and grind it to a halt.
+    # verify-batch.sh splits it into parallel boot chunks (the agent's
+    # optional "chunks" hint in probes.json is honored), each with fresh
+    # canaries, then repairs failures on clean boots. Merged verdicts keep
+    # the single-run schema, and merged events land exactly where the
+    # write-back below reads them (taint-source/verify/driver-probes/)
+    bash "$SCRIPTS/verify-batch.sh" \
+        --budget 1200 \
         --out "$RUNDIR/verify-verdicts.json" \
+        --workdir "$MODEL/taint-source/verify/driver-probes" \
         "$MODEL" "$RUNDIR/driver-probes.json" || VERIFY_RC=$?
 else
     echo "[*] skipping dynamic verification (validation failed)"
 fi
 
-# ---- verified call sites + result.json (the driver's verdict) ------------------
+# ---- verified call sites + taint-result.json (the driver's verdict) -----------
 python3 - "$MODEL" "$RUNDIR" "$RUN_START_ISO" "$AGENT_DUR" "$AGENT_RC" \
     "$TIMEOUT" "${VALIDATE_RC:-1}" "$VERIFY_RC" <<'EOF'
 import glob, json, os, re, sys, datetime
@@ -594,18 +634,26 @@ result = {
         "call_sites_not_attempted": tally.get("not-attempted", 0),
     },
 }
-# NOTE: written to taint-run/ — the model root's result.json belongs to the
+# NOTE: written to taint-run/taint-result.json — the stage-qualified name
+# can never collide with the model root's result.json, which belongs to the
 # REHOST stage and must survive this stage untouched
-result_path = os.path.join(rundir, "result.json")
+result_path = os.path.join(rundir, "taint-result.json")
 json.dump(result, open(result_path, "w"), indent=2, ensure_ascii=False)
 print(f"[result] {result_path}  status={status}"
       + (f"  ({'; '.join(reasons)})" if reasons else ""))
 EOF
 
+# ---- assemble per-function folders (the next stage's working dirs) -----------
+# a view step, never a gate: reports orphans, moves nothing on failure
+echo "[*] assembling per-function folders..."
+python3 "$SCRIPTS/assemble-functions.py" "$MODEL" \
+    --verdicts "$RUNDIR/verify-verdicts.json" \
+    --events "$MODEL/taint-source/verify/driver-probes/events.jsonl" || true
+
 # ---- summary --------------------------------------------------------------------
-STATUS=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["status"])' "$RUNDIR/result.json")
-COV=$(python3 -c 'import json,sys;c=json.load(open(sys.argv[1]))["coverage"];print(" ".join(f"{k}={v}" for k,v in c.items()))' "$RUNDIR/result.json")
-REASONS=$(python3 -c 'import json,sys;print("; ".join(json.load(open(sys.argv[1])).get("status_reasons",[]))[:400])' "$RUNDIR/result.json")
+STATUS=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["status"])' "$RUNDIR/taint-result.json")
+COV=$(python3 -c 'import json,sys;c=json.load(open(sys.argv[1]))["coverage"];print(" ".join(f"{k}={v}" for k,v in c.items()))' "$RUNDIR/taint-result.json")
+REASONS=$(python3 -c 'import json,sys;print("; ".join(json.load(open(sys.argv[1])).get("status_reasons",[]))[:400])' "$RUNDIR/taint-result.json")
 echo
 echo "===== agent-scan taint: $TASK_ID ====="
 echo "status    : $STATUS   (exit code follows this)"
@@ -614,5 +662,5 @@ echo "agent     : rc=$AGENT_RC duration=${AGENT_DUR}s timeout=${TIMEOUT}s"
 echo "validation: $RUNDIR/validation.json"
 echo "verdicts  : $RUNDIR/verify-verdicts.json (fresh-canary re-run)"
 echo "coverage  : $COV"
-echo "result    : $RUNDIR/result.json"
+echo "result    : $RUNDIR/taint-result.json"
 [ "$STATUS" = "success" ] || exit 1

@@ -34,11 +34,19 @@ then re-proves the agent's claims with its own canaries.
     │       schema + every call address cross-checked against the agent's own
     │       Ghidra index (fabricated call sites cannot survive)
     │
-    ├─ driver verification (fresh canaries, fresh container)
-    │       verify-request.sh re-runs probes.json ─▶ taint-run/verify-verdicts.json
-    │                                            └─▶ taint-source-output/verified-callsites.json
+    ├─ driver verification (fresh canaries, fresh containers, parallel boots)
+    │       verify-batch.sh splits probes.json into boot chunks (the agent's
+    │       optional "chunks" hint) → parallel verify-request.sh runs →
+    │       slow-zone analysis → repair round for failures
+    │                                    ─▶ taint-run/verify-verdicts.json
+    │                                    └─▶ taint-source-output/verified-callsites.json
     │
-    └─ result.json   status = success | fail | agent_timeout | agent_error
+    └─ taint-result.json   status = success | fail | agent_timeout | agent_error
+       (last step) assemble-functions.py moves the flat records into
+       functions/<binary__function>/ folders, each with probes.json —
+       the probes that exercised that function, their verdicts, and
+       per-field canary channel types: the next stage's per-agent
+       working directories
 ```
 
 ## The verdict contract
@@ -51,6 +59,15 @@ then re-proves the agent's claims with its own canaries.
   accessors like `cJSON_GetInt` can never surface a string canary). The
   agent cannot pre-plant evidence for a value it has not seen; the driver's
   final re-run uses fresh canaries anyway.
+- **Parallel boot chunks.** A full-coverage batch (every entry, every call
+  site armed) cannot run in one boot — the armed breakpoints also sit on
+  the guest's own init path and grind it. The driver's re-run splits the
+  spec into chunks (the agent may set a top-level `"chunks": <int>` in
+  probes.json), one boot each, all in parallel; per-probe distinct,
+  per-run fresh canary values make cross-chunk contamination impossible.
+  A second repair round re-runs pass-expected failures on clean boots:
+  slow-send wedge suspects (trailing ~20s+ send gaps) run isolated alone,
+  the rest with a fresh session bootstrap.
 - **`ret_breaks` are the strongest evidence.** The recorder arms breakpoints
   at the return sites of chosen call sites (call address + arch delay), so a
   `ret_hit` with the canary proves the accessor *returned* attacker data.
@@ -75,7 +92,7 @@ then re-proves the agent's claims with its own canaries.
 - Statuses: `success` = schema valid AND every entry attempted AND every
   call site of the probed binary armed AND every pass-expected probe passed
   the driver's own fresh-canary re-run; `fail` = anything else (with
-  `status_reasons` in result.json).
+  `status_reasons` in taint-result.json).
 
 ## Scripts
 
@@ -84,9 +101,13 @@ then re-proves the agent's claims with its own canaries.
 | `frontend-keywords.py` | whole-rootfs frontend file scan by suffix (markup/script/data), per-type parsers, 5 keyword buckets with counts/origins/files; client-side template blocks (`<script type="text/template">`, content-detected) are re-parsed as markup — their form vocabulary is invisible to the outer parse | pure suffix + generic web parsing; zero vendor constants |
 | `ghidra-index.sh` (+ `IndexExporter.java`) | one-shot Ghidra headless analysis → per-function xref index (strings, call edges with args, decompiled text calls with resolved arithmetic); project cached under `taint-source/ghidra-projects/`; callers sorted for byte-reproducibility | architecture-neutral; 3 unioned evidence paths covering the ARM PIC (`DAT_x ± 0xCONST`) and the MIPS GOT/ELF-DYN (`PTR_lbl_slot ± 0xCONST`, `(*(code *)PTR_x)(...)`) idioms; big-endian validated |
 | `taint-query.py` | query layer over the index: `callsites`, `strings-in`, `xrefs`, `callers`, `fn`, `colocate`, `list` | pure queries; `colocate` ranks candidates, never decides |
-| `verify-request.sh` | deterministic dynamic verifier: fresh lab container → `emu boot` (CPU frozen, gdbstub 0.0.0.0:1234) → host gdb-multiarch recorder → send probes → verdicts; two canary channels (`{{CANARY}}` string, `{{CANARY_INT}}` register-equality) | probe content entirely agent-authored; arch table is ABI facts (arm/aarch64/mips) |
+| `verify-request.sh` | deterministic dynamic verifier: fresh lab container → `emu boot` (CPU frozen, gdbstub 0.0.0.0:1234) → host gdb-multiarch recorder → send probes → verdicts; two canary channels (`{{CANARY}}` string, `{{CANARY_INT}}` register-equality); one spec = one boot; `--workdir` lets a batch driver own the artifact layout | probe content entirely agent-authored; arch table is ABI facts (arm/aarch64/mips) |
+| `verify-batch.sh` | two-phase parallel re-verification of a full spec: chunk split → parallel boots (semaphore `--max-parallel`) → send-timing slow-zone analysis → repair round (victims on clean boots, wedge suspects isolated alone); merged verdicts keep the single-run schema | policy purely mechanical (spec order, curl jar semantics, 15s send-gap threshold); chunk count from `--chunks` / spec `chunks` hint / ceil(n/32) |
+| `chunk-probes.py` | order-preserving spec splitter with session-bootstrap replication (the `-c` jar writer moved/copied to every reader chunk's front); `--isolate` gives listed probes a boot each; usable by the agent for its own big batches | generic curl semantics only |
+| `merge-verdicts.py` | merges per-chunk verdicts/events pass-if-any (value-based canary attribution — chunks cannot cross-contaminate) and computes the repair analysis (failed / suspects / victims from send timings) | — |
+| `assemble-functions.py` | last driver step: moves each flat function record into `functions/<binary__function>/` and writes the folder's `probes.json` — every probe exercising that function (handler via entry_break, helper via armed call sites), with request template, canary channel types per field, driver verdict, and the sites it verified here; a probe appears in every folder it serves but executes once, so verdicts are consistent by construction | pure joins over existing artifacts; reports orphan probes |
 | `gdb-recorder.py` | GDB-side passive recorder driven by env vars; every breakpoint auto-continues, logs `source_hit`/`entry_hit`/`ret_hit` events with canary matches (string scan in buffers + int register equality) | register tables per ABI; nothing firmware-specific |
-| `taint-run.sh` | task driver: lock → clean outputs → host-side agent under watchdog → schema validation + index cross-check → fresh-canary re-verification → `result.json` | — |
+| `taint-run.sh` | task driver: lock → clean outputs → host-side agent under watchdog → schema validation + index cross-check → fresh-canary re-verification → `taint-run/taint-result.json` | — |
 | `taint-prompt.md` | the agent's mission brief (stages, tool contracts, output schemas, rules) | — |
 
 ## Output contract (per model folder)
@@ -96,10 +117,15 @@ then re-proves the agent's claims with its own canaries.
                                  ghidra-index/, ghidra-projects/ (cache)
 <model>/taint-source-output/     deliverables:
     summary.json                 boundary_binaries, taint_sources, entries
-    functions/*.json             per containing function: every taint-source
-                                 call (source, call_address, params) — the
-                                 driver's re-run later annotates each call
-                                 with its dynamic verify status
+    functions/<binary__function>/
+                                 one folder per containing function (the
+                                 next stage's per-agent working directory):
+                                 <binary__function>.json — the record,
+                                 annotated with per-call-site verify status
+                                 probes.json — the probes exercising this
+                                 function (request template = the proven
+                                 request format, canary channel types per
+                                 field, driver verdict, verified sites here)
     probes.json                  the final verify spec (harness re-runs it)
     verified-callsites.json      driver-produced: which call sites the
                                  fresh-canary re-run actually proved, plus
@@ -107,8 +133,14 @@ then re-proves the agent's claims with its own canaries.
 <model>/taint-run/               driver artifacts: agent.log,
                                  agent-transcripts.tar, validation.json,
                                  driver-probes.json, verify-verdicts.json,
-                                 result.json
+                                 taint-result.json
 ```
+
+The per-function folders are the starting points for the next stage's
+taint-analysis agent: each agent is dispatched with one (or several)
+folder(s) as its working directory and finds everything it needs inside —
+the call inventory, the dynamic status of every site, and the working
+request format that fed it.
 
 The per-function records are the starting points for the next stage's
 taint-analysis agent (its granularity: functions containing verified

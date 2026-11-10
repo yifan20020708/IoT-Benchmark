@@ -45,6 +45,12 @@ to confirm with the decompiled code.
   `pass` (canary observed in the taint source's arguments/return value) |
   `no-canary` (source ran, canary absent) | `no-hit` (source never ran).
   exit 0 = all probes pass. See its header for the spec format.
+- `chunk-probes.py <spec.json> <outdir> [--chunks N | --size K]` —
+  mechanical batch splitter for your OWN large self-check runs: splits a
+  spec order-preserving into chunk specs, replicating the session
+  bootstrap probe (the curl `-c` jar writer your other probes read with
+  `-b`) into every chunk, so each can run as its own
+  `verify-request.sh` boot in parallel.
 
 All scripts live in `{{SCRIPTS}}` (this absolute path is where they are);
 invoke them by absolute path. Read a script's header (`--help`) before first
@@ -165,6 +171,16 @@ boot ≈ 1–2 min, probes are batched per boot (many probes, one run; raise
   to guess, print, or plant it — the harness will re-run your probes with
   FRESH canaries after you exit, and only genuine evidence passes that
   re-run.
+- The harness's re-verification runs your probes.json in PARALLEL BOOT
+  CHUNKS (one boot cannot carry a full-coverage batch: hundreds of armed
+  breakpoints also sit on the guest's own init path and grind it). An
+  optional top-level `"chunks": <int>` field in probes.json sets the chunk
+  count (default ceil(n/32); your probe ORDER is preserved within each
+  chunk, and every chunk re-bootstraps its own session). Order probes so
+  wedge-prone modules — handlers that stop answering AFTER they respond —
+  come LAST, and keep each re-login probe after the state change it
+  recovers from: the driver retries failures on fresh boots, but good
+  ordering keeps that retry wave small.
 
 When your budget runs short, prioritize: (1) every entry attempted with a
 well-shaped request, (2) full `ret_breaks` on the unauthenticated entries,
@@ -203,7 +219,11 @@ well-shaped request, (2) full `ret_breaks` on the unauthenticated entries,
 - `taint-source-output/functions/*.json` — the per-function records (stage 4).
   The harness's fresh-canary re-run later annotates each call with its
   dynamic verify status (`verified` / `reached-unfed` / `not-reached` /
-  `not-attempted`) — write the records clean, without those fields.
+  `not-attempted`) — write the records clean, without those fields. The
+  driver's final step moves each record into its own
+  `functions/<binary__function>/` folder alongside the probes that
+  exercised it (the next stage's per-agent working directories); you
+  write the flat files, the driver does the reorganizing.
 - `taint-source-output/probes.json` — the final spec the harness re-runs.
   Each probe may carry `"expect": "pass"` (default) or `"expect":
   "unreachable"`; the driver only fails the run when a pass-expected probe
