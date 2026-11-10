@@ -1,7 +1,12 @@
 #!/bin/bash
 # agent-scan :: taint — stage-2 task runner (host-side agent + driver verdict)
 #
-# Usage: taint-run.sh [--timeout <seconds>] <model-dir>
+# Usage: taint-run.sh [--timeout <seconds>] [--regrade] <model-dir>
+#   --regrade  grade the agent artifacts already on disk (probes.json +
+#              summary.json must exist) with the driver's own validation
+#              and fresh-canary verification — the post-agent code path
+#              only. For interrupted runs: the verdict means exactly what
+#              it would have meant had the agent exited normally.
 #
 #   <model-dir>   a data/firmware/<brand>/<model> folder with task.json and
 #                 rootfs/, whose emulation is SOLVED (image
@@ -71,13 +76,15 @@ SCRIPTS="$ROOT/scripts/taint"
 ENV_FILE="$ROOT/.env"
 
 TIMEOUT=7200
+REGRADE=0
 while [ $# -gt 1 ]; do
     case "$1" in
         --timeout) TIMEOUT="$2"; shift 2 ;;
-        *) echo "usage: taint-run.sh [--timeout <seconds>] <model-dir>" >&2; exit 1 ;;
+        --regrade) REGRADE=1; shift ;;
+        *) echo "usage: taint-run.sh [--timeout <seconds>] [--regrade] <model-dir>" >&2; exit 1 ;;
     esac
 done
-MODEL="${1:?usage: taint-run.sh [--timeout <seconds>] <model-dir>}"
+MODEL="${1:?usage: taint-run.sh [--timeout <seconds>] [--regrade] <model-dir>}"
 MODEL="$(cd "$MODEL" 2>/dev/null && pwd)" || { echo "[-] no such folder: $1" >&2; exit 1; }
 [ -f "$MODEL/task.json" ] || { echo "[-] missing task.json in $MODEL" >&2; exit 1; }
 [ -f "$ENV_FILE" ] || { echo "[-] missing $ENV_FILE" >&2; exit 1; }
@@ -102,16 +109,36 @@ RUNDIR="$MODEL/taint-run"
 
 echo "[*] task=$TASK_ID model=$MODEL timeout=${TIMEOUT}s"
 
-# fresh agent outputs; the Ghidra project cache is deterministic per binary
-# and expensive to rebuild, so it survives re-runs
-rm -rf "$MODEL/taint-source-output" "$RUNDIR"
-mkdir -p "$MODEL/taint-source-output" "$MODEL/taint-source" "$RUNDIR"
-find "$MODEL/taint-source" -mindepth 1 -maxdepth 1 ! -name ghidra-projects \
-    -exec rm -rf {} + 2>/dev/null || true
+if [ "$REGRADE" = 1 ]; then
+    # --regrade: grade the artifacts ALREADY on disk (an interrupted run's
+    # agent output) with the driver's own validation + fresh-canary
+    # verification. No cleaning, no agent phase — the same code path a
+    # normal run takes after the agent exits, so the verdict is identical
+    # in meaning. agent rc/duration are not part of a regrade (the agent's
+    # liveness was settled when the run was interrupted).
+    mkdir -p "$RUNDIR"
+    [ -f "$MODEL/taint-source-output/probes.json" ] \
+        || { echo "[-] --regrade: no taint-source-output/probes.json on disk" >&2; exit 1; }
+    [ -f "$MODEL/taint-source-output/summary.json" ] \
+        || { echo "[-] --regrade: no taint-source-output/summary.json on disk" >&2; exit 1; }
+    echo "[*] REGRADE MODE: skipping agent phase, grading existing artifacts"
+else
+    # fresh agent outputs; the Ghidra project cache is deterministic per binary
+    # and expensive to rebuild, so it survives re-runs
+    rm -rf "$MODEL/taint-source-output" "$RUNDIR"
+    mkdir -p "$MODEL/taint-source-output" "$MODEL/taint-source" "$RUNDIR"
+    find "$MODEL/taint-source" -mindepth 1 -maxdepth 1 ! -name ghidra-projects \
+        -exec rm -rf {} + 2>/dev/null || true
+fi
 
 # ---- run the agent (host-side, model folder as cwd) ---------------------------
 # The child claude must not inherit this session's inter-process state
 # (messaging socket, session ids); credentials come from .env.
+AGENT_RC=0
+AGENT_DUR=0
+MODE_ARG="regrade"
+if [ "$REGRADE" != 1 ]; then
+MODE_ARG="full"
 AGENT_START=$(date +%s)
 # render the mission brief with the absolute scripts path ({{SCRIPTS}})
 sed "s|{{SCRIPTS}}|$SCRIPTS|g" "$SCRIPTS/taint-prompt.md" > "$RUNDIR/prompt.rendered.md"
@@ -164,6 +191,7 @@ AGENT_DUR=$((AGENT_END - AGENT_START))
 SLUG="-$(printf '%s' "$MODEL" | sed 's|^/||; s|[^a-zA-Z0-9_-]|-|g')"
 find "$HOME/.claude/projects/$SLUG" -name '*.jsonl' -newermt "@$RUN_START" \
     -exec tar -rf "$RUNDIR/agent-transcripts.tar" {} + 2>/dev/null || true
+fi   # end of the non-regrade agent phase
 
 # ---- driver validation: schema + call-site cross-check ------------------------
 echo "[*] driver validation (schema + index cross-check)..."
@@ -423,11 +451,12 @@ fi
 
 # ---- verified call sites + taint-result.json (the driver's verdict) -----------
 python3 - "$MODEL" "$RUNDIR" "$RUN_START_ISO" "$AGENT_DUR" "$AGENT_RC" \
-    "$TIMEOUT" "${VALIDATE_RC:-1}" "$VERIFY_RC" <<'EOF'
+    "$TIMEOUT" "${VALIDATE_RC:-1}" "$VERIFY_RC" "$MODE_ARG" <<'EOF'
 import glob, json, os, re, sys, datetime
 
 (model, rundir, started, agent_dur, agent_rc, timeout,
  validate_rc, verify_rc) = sys.argv[1:9]
+mode = sys.argv[9] if len(sys.argv) > 9 else "full"
 agent_dur, agent_rc, timeout = int(agent_dur), int(agent_rc), int(timeout)
 validate_rc = int(validate_rc)
 verify_rc = None if verify_rc == "skipped" else int(verify_rc)
@@ -594,7 +623,7 @@ elif not verdicts:
 elif expected_fail:
     reasons.append(f"{len(expected_fail)} expected-pass probe(s) failed: "
                    + ", ".join(expected_fail[:10]))
-elif unfed_fail:
+if unfed_fail:
     reasons.append(f"{len(unfed_fail)} unfed-expected probe(s) failed "
                    f"dispatch proof: " + ", ".join(unfed_fail[:10]))
 if unattempted:
@@ -617,6 +646,7 @@ else:
 result = {
     "task": "/".join(model.rstrip("/").split("/")[-2:]),
     "stage": "taint",
+    "mode": mode,   # "full" (agent ran in this invocation) | "regrade"
     "status": status,
     "status_reasons": reasons,
     "started_at": started,
@@ -688,7 +718,11 @@ echo
 echo "===== agent-scan taint: $TASK_ID ====="
 echo "status    : $STATUS   (exit code follows this)"
 [ -n "$REASONS" ] && echo "reasons   : $REASONS" || true
-echo "agent     : rc=$AGENT_RC duration=${AGENT_DUR}s timeout=${TIMEOUT}s"
+if [ "$REGRADE" = 1 ]; then
+    echo "mode      : regrade (agent phase skipped; artifacts graded as-is)"
+else
+    echo "agent     : rc=$AGENT_RC duration=${AGENT_DUR}s timeout=${TIMEOUT}s"
+fi
 echo "validation: $RUNDIR/validation.json"
 echo "verdicts  : $RUNDIR/verify-verdicts.json (fresh-canary re-run)"
 echo "coverage  : $COV"

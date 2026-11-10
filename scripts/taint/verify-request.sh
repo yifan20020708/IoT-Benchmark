@@ -274,9 +274,20 @@ for p in spec["probes"]:
             for a in p["request"]]
     print(f"[verify] probe {p['id']}: {' '.join(argv[:6])}{' ...' if len(argv) > 6 else ''}")
     t0 = time.time()
-    rc = subprocess.run(["docker", "exec", ctr] + argv,
-                        capture_output=True, text=True, timeout=60).returncode
-    sends[p["id"]] = {"t": t0, "curl_rc": rc}
+    # bytes, never decoded (a probe's response may be BINARY — an upload/
+    # download endpoint returning a config blob crashed the whole send loop
+    # under text=True); and one bad probe must never kill its whole chunk:
+    # a docker-exec hang, a 60s timeout, any exception is recorded and the
+    # loop moves on (the chunk's other probes keep their verdicts)
+    try:
+        rc = subprocess.run(["docker", "exec", ctr] + argv,
+                            capture_output=True, timeout=60).returncode
+        sends[p["id"]] = {"t": t0, "curl_rc": rc}
+    except Exception as e:
+        sends[p["id"]] = {"t": t0, "curl_rc": -1, "error": str(e)[:200]}
+        print(f"[verify] probe {p['id']}: send error ({e}); continuing")
+        time.sleep(2)
+        continue
     time.sleep(2)  # let the handler run before the next request
 json.dump(sends, open(os.path.join(work, "send-times.json"), "w"), indent=2)
 EOF
