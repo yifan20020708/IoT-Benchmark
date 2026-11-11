@@ -1,4 +1,9 @@
-# agent-scan :: taint
+# agent-scan :: taint-ori  (ARCHIVED)
+
+> **Archived 2026-11-11.** Superseded by the completely rewritten
+> `scripts/taint/` (Mapper/Verifier two-phase architecture). This folder is
+> kept as a historical reference only — nothing in the live pipeline calls
+> into it, and its scripts' cross-references are no longer maintained.
 
 Map the **network-input surface** of solved firmware emulations: which
 binaries receive user requests, which functions inside them are the
