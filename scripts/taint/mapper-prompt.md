@@ -169,7 +169,10 @@ rootfs-relative path with `/` replaced by `__` (e.g. `bin/httpd` →
 `[A-Za-z0-9_.@-]` replaced by `-`. A function gets a folder iff it has at
 least one source or getter call site; every folder holds BOTH files (an
 empty list means "none found"). Required fields are listed below — add
-extra fields freely.
+extra fields freely. **Every required field must be present at the TOP
+LEVEL of each record; `callsite` is an additional verbatim copy, never a
+substitute for them** (e.g. an item without its own `ret_site` is a
+contract violation even when `callsite.ret_site` holds the value).
 
 **boundary.json**
 ```json
