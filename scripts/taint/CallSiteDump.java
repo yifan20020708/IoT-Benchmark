@@ -238,10 +238,12 @@ public class CallSiteDump extends GhidraScript {
 
     // ---- per-function dump ----------------------------------------------
     private static final class FnCtx {
-        List<TextCall> direct = new ArrayList<>();
-        List<TextCall> indirect = new ArrayList<>();
-        final Map<String, Integer> used = new HashMap<>(); // direct-name counters
-        int indirectUsed = 0;                              // indirect-order counter
+        // ALL call expressions from the decompiled C, text order, consumed
+        // on join. Direct form `name(args)` and the MIPS/GOT indirect form
+        // `(*(code *)PTR_name_slot)(args)` are keyed by the SAME name — on
+        // MIPS every external call renders as the PTR form, so resolved
+        // callees must find their text evidence there.
+        final List<TextCall> texts = new ArrayList<>();
     }
 
     private String dumpFunction(DecompInterface dec, Function f, List<Instruction> calls) {
@@ -264,7 +266,7 @@ public class CallSiteDump extends GhidraScript {
                 }
                 String c = dr.getDecompiledFunction() != null
                     ? dr.getDecompiledFunction().getC() : null;
-                collectTextCalls(c, ctx.direct, ctx.indirect, 0);
+                collectTextCalls(c, ctx.texts, 0);
             }
 
             StringBuilder sb = new StringBuilder(4096);
@@ -328,30 +330,27 @@ public class CallSiteDump extends GhidraScript {
             }
         }
 
-        // text join: same-callee occurrence order
+        // text join: same-name occurrence order over the combined queue —
+        // resolved callees match either text form; unresolved indirect sites
+        // fall back to order over the remaining PTR-form expressions
         String[] textArgs = null;
         String calleeHint = null;
         if (callee != null) {
-            int idx = ctx.used.getOrDefault(callee, 0);
-            ctx.used.put(callee, idx + 1);
-            List<String> match = null;
-            for (TextCall tc : ctx.direct) {
-                if (tc.indirect || !tc.name.equals(callee)) continue;
-                if (idx == 0) { match = tc.args; break; }
-                idx--;
+            for (TextCall tc : ctx.texts) {
+                if (tc.consumed || !tc.name.equals(callee)) continue;
+                tc.consumed = true;
+                textArgs = tc.args.toArray(new String[0]);
+                textJoined++;
+                break;
             }
-            if (match != null) { textArgs = match.toArray(new String[0]); textJoined++; }
         } else {
-            // indirect text call idiom ((* (code *)PTR_x_...)(args)) by order
-            int idx = ctx.indirectUsed++;
-            for (TextCall tc : ctx.indirect) {
-                if (idx == 0) {
-                    textArgs = tc.args.toArray(new String[0]);
-                    // the PTR label is the decompiler's naming hint, not proof
-                    if (tc.name != null && !tc.name.isEmpty()) calleeHint = tc.name;
-                    break;
-                }
-                idx--;
+            for (TextCall tc : ctx.texts) {
+                if (tc.consumed || !tc.indirect) continue;
+                tc.consumed = true;
+                textArgs = tc.args.toArray(new String[0]);
+                // the PTR label is the decompiler's naming hint, not proof
+                if (tc.name != null && !tc.name.isEmpty()) calleeHint = tc.name;
+                break;
             }
         }
 
@@ -675,7 +674,8 @@ public class CallSiteDump extends GhidraScript {
     private static final class TextCall {
         final String name;
         final List<String> args;
-        final boolean indirect;
+        final boolean indirect; // the (*(code *)PTR_label_slot)(args) form
+        boolean consumed;
         TextCall(String name, List<String> args, boolean indirect) {
             this.name = name;
             this.args = args;
@@ -683,11 +683,10 @@ public class CallSiteDump extends GhidraScript {
         }
     }
 
-    private void collectTextCalls(String c, List<TextCall> direct,
-            List<TextCall> indirectOut, int depth) {
+    private void collectTextCalls(String c, List<TextCall> out, int depth) {
         if (c == null || depth > 4) return;
-        // direct calls: identifier(args), paren-depth aware, nested calls
-        // inside the argument text are collected recursively
+        // direct call form: identifier(args), paren-depth aware; nested
+        // calls inside the argument text are collected recursively
         int i = 0, n = c.length();
         while (i < n) {
             char ch = c.charAt(i);
@@ -703,8 +702,8 @@ public class CallSiteDump extends GhidraScript {
                     int close = matchingParen(c, k);
                     if (close > k) {
                         String inner = c.substring(k + 1, close);
-                        direct.add(new TextCall(name, splitArgs(inner), false));
-                        collectTextCalls(inner, direct, indirectOut, depth + 1);
+                        out.add(new TextCall(name, splitArgs(inner), false));
+                        collectTextCalls(inner, out, depth + 1);
                         i = close + 1;
                         continue;
                     }
@@ -714,10 +713,11 @@ public class CallSiteDump extends GhidraScript {
             }
             i++;
         }
-        // indirect calls: (*(code *)PTR_label_addr)(args) — MIPS GOT idiom
+        // indirect form: (*(code *)PTR_label_slot)(args) — the MIPS/GOT
+        // idiom; keyed by the PTR label so resolved callees can join it
         Matcher m = CALL_IND_RE.matcher(c);
         while (m.find()) {
-            indirectOut.add(new TextCall(m.group(1), splitArgs(m.group(3)), true));
+            out.add(new TextCall(m.group(1), splitArgs(m.group(3)), true));
         }
     }
 
