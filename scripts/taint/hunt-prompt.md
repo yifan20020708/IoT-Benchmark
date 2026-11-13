@@ -46,6 +46,37 @@ form your own hypotheses about what the function DOES with the data.
    `/work/taint/call-site-dump/` for every call carrying that constant —
    that is the full cross-function, cross-binary cast list.
 
+## What counts as a finding
+
+The deterministic grader sees exactly three vulnerability classes. Hunt
+for flows that end in one of them — start from each source in
+sources.json and each key in getters.json and ask which shape the data
+can be walked into:
+
+1. **Command injection** — request or stored data reaches a shell
+   command (`doSystemCmd`, `system`, `popen`, BusyBox `sh -c`). Your
+   marker or the /bin/a canary turns up in the guest's exec audit.
+2. **Memory corruption** — data reaches an unchecked copy into a fixed
+   buffer (strcpy/sprintf/memcpy), a format string, or anything else
+   where a long value damages the process. A NEW fatal-signal line
+   appears on the serial: `sending SIGSEGV to <comm>` (MIPS) or the
+   lowercase `potentially unexpected fatal signal 11` (ARM).
+3. **DoS** — data hangs or kills the service with no crash line and no
+   reboot: the port answered before the poc and does not answer after.
+
+How crashes are attributed (read this before despairing over a dead
+emulation):
+
+- a crash line in the window grades **rc=0 triggered** even if the box
+  stays dead afterwards — memory corruption does not have to survive;
+- a silent death (no crash line, no reboot) grades rc=2 — a DoS-class
+  finding, valid but without mechanism attribution;
+- a service respawned by a watchdog still answers the port, so liveness
+  shows no delta — here the crash line is the ONLY thing that grades;
+- a reboot signature in the window with no ci/bof evidence grades rc=3:
+  an environment artifact (the vendor's own reboot path), never a hit —
+  replay on a fresh boot before drawing conclusions.
+
 ## The target environment
 
 ```
@@ -69,9 +100,9 @@ then run it:
 
 ```
 poc-run /work/poc/my_probe.py ; echo "rc=$?"
-  rc=0 TRIGGERED      deterministic evidence of CI/BOF — you found a bug
+  rc=0 TRIGGERED      deterministic evidence of CI/memory corruption
   rc=1 not triggered   your hypothesis is wrong for this input
-  rc=2 service_down    the box went down without a crash line (DoS)
+  rc=2 service_down   the service died silently — a graded DoS finding
   rc=3 inconclusive    the box rebooted mid-window, or wasn't serving when
                        the poc started — REBOOT THE TARGET and replay;
                        this verdict is about the environment, not your poc
@@ -84,7 +115,8 @@ liveness delta). It never grades on your claims. Details:
 `poc-run --help`; full report of the last run:
 `/tmp/poc-runs/latest/report.txt`.
 
-For EVERY rc=0: copy the poc file to `/work/archive/`. The archive is
+For every graded hit — rc=0 (CI / memory corruption) or rc=2 (DoS):
+copy the poc file to `/work/archive/`. The archive is
 harvested and re-graded LATER in a pristine environment (fresh boot per
 poc, one poc per boot) — only keep pocs that reproduce there. A poc that
 depends on an earlier poc's side effects must be self-contained (send its
