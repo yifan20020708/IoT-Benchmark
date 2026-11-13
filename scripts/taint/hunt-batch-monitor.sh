@@ -134,8 +134,12 @@ except Exception:
 
 def unit_live(u):
     us = u.replace("_", "-")
+    # anchor at the END of the container slug (optionally its verify -<idx>
+    # suffix): substring matching cross-matched units that are prefixes of
+    # others (getIpSecTunnel vs getIpSecTunnelAutoParameters)
+    tail = re.compile(r"-" + re.escape(us) + r"(-\d+)?$")
     for slug, kind in live.items():
-        if us in slug or slug in us:
+        if tail.search(slug):
             return kind
     return None
 
