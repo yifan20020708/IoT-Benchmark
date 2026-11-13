@@ -228,8 +228,9 @@ button,input{font:inherit;color:inherit}
 .railfoot b{color:var(--mut);font-weight:600}
 
 /* ── main ─────────────────────────────────────────────── */
-main{padding:0 30px 48px;min-width:0;height:100vh;overflow-y:auto;overflow-x:hidden}
-.mhead{display:flex;align-items:baseline;gap:16px;padding:26px 0 10px;flex-wrap:wrap;position:sticky;top:0;background:var(--bg);z-index:2}
+main{padding:0 30px;min-width:0;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.mhead{display:flex;align-items:baseline;gap:16px;padding:26px 0 10px;flex-wrap:wrap;flex:0 0 auto;background:var(--bg)}
+#body{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding-bottom:8px}
 .mhead h1{font-size:19px;font-weight:680;margin:0;letter-spacing:-.01em}
 .mtools{margin-left:auto;display:flex;align-items:center;gap:14px;font:11.5px var(--mono);color:var(--faint)}
 .live{display:inline-flex;align-items:center;gap:6px}
@@ -267,7 +268,7 @@ main{padding:0 30px 48px;min-width:0;height:100vh;overflow-y:auto;overflow-x:hid
 .card .cfoot .mk{color:var(--faint);margin-left:auto}
 .card .cfoot .dt{color:var(--faint)}
 .empty{padding:80px 0;text-align:center;color:var(--faint);font:12.5px var(--mono)}
-footer{margin-top:34px;color:var(--faint);font:11px var(--mono);border-top:1px solid var(--line);padding-top:12px}
+footer{flex:0 0 auto;margin:0;color:var(--faint);font:11px var(--mono);border-top:1px solid var(--line);padding:12px 0 16px;background:var(--bg)}
 
 /* ── drawer ───────────────────────────────────────────── */
 #scrim{position:fixed;inset:0;background:rgba(5,8,12,.55);opacity:0;pointer-events:none;transition:opacity .25s;z-index:30}
@@ -325,7 +326,8 @@ pre.qs{margin:0;padding:12px 14px;background:var(--bg);border:1px solid var(--li
   body{overflow:auto}
   .app{grid-template-columns:1fr;height:auto;overflow:visible}
   .rail{position:static;height:auto;border-right:none;border-bottom:1px solid var(--line)}
-  main{padding:0 16px 40px;height:auto;overflow:visible}
+  main{padding:0 16px 40px;height:auto;display:block;overflow:visible}
+  #body{overflow:visible;flex:none}
   .mhead{position:static}
   .dmeta{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
