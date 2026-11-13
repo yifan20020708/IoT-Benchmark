@@ -127,15 +127,28 @@ fi
 [ -n "$SERIAL" ] && [ -f "$SERIAL" ] \
   || fail 3 "serial log not found (pass --serial PATH if non-standard)"
 
-# ANALYZE channel must be armed (firmadyne.syscall bit 32), else CI runs blind
+# CI channel needs the ANALYZE execve audit (firmadyne.syscall bit 32) — it
+# is registered at BOOT time only (runtime /sys writes change the parameter
+# but not the jprobes, verified on AC15). Without it the marker/canary
+# execve lines never appear; crash + liveness channels stay fully active,
+# so grade those and flag CI as not evaluable instead of blocking.
 SC=$(printf '%s\n' "$CMDLINE" | grep -o 'firmadyne\.syscall=[0-9]\+' | head -1 | cut -d= -f2)
 SC=${SC:-0}
+CI_ARMED=1
 if [ "$(( SC & 32 ))" -eq 0 ]; then
-  fail 3 "ANALYZE channel off (firmadyne.syscall=$SC): reboot the emulation in analyze mode first (e.g. emu stop && emu analyze)"
+  CI_ARMED=0
 fi
 
-IP=$(head -n1 "$(dirname "$SERIAL")/ip" 2>/dev/null | tr -d '[:space:]')
-[ -n "$IP" ] || fail 3 "guest IP not found at $(dirname "$SERIAL")/ip"
+# guest IP: both spellings (inferNetwork writes `ip`, makeNetwork multi-if
+# writes `ip.0`/`ip.1` — W30E class images have no plain `ip`)
+D=$(dirname "$SERIAL")
+IP=$(head -n1 "$D/ip" 2>/dev/null | tr -d '[:space:]')
+if [ -z "$IP" ]; then
+  for f in "$D"/ip.[0-9]*; do
+    [ -f "$f" ] && IP=$(head -n1 "$f" | tr -d '[:space:]') && [ -n "$IP" ] && break
+  done
+fi
+[ -n "$IP" ] || fail 3 "guest IP not found ($D/ip, $D/ip.N)"
 
 # ------------------------------------------------------------ run poc ------
 # FirmAE-d34d-style attribution token, unique per run
@@ -148,6 +161,55 @@ probe() {  # probe <ip> <port> -> alive|dead
     echo dead
   fi
 }
+
+# --- CI side-effect channel (no analyze mode needed) ------------------------
+# FirmAE bakes /bin/a (injectionChecker) into every image; a CI that executes
+# it appends a date+env+stat record to the guest file
+# /firmadyne/os_cmd_injection_log. If the debug-boot telnetd backdoor
+# (31338 -> /firmadyne/sh) is reachable, we count those records before/after
+# the poc — CI verdicts then work even when the ANALYZE execve audit is off.
+GEXEC="$OUT/gexec.py"
+cat > "$GEXEC" <<'GSEOF'
+import re, socket, sys, time
+ip, port, cmd = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+try:
+    s = socket.create_connection((ip, port), 3)
+    s.settimeout(2.5)
+except OSError:
+    sys.exit(5)
+time.sleep(0.3)
+try:
+    s.recv(65536)
+except OSError:
+    pass
+s.sendall((cmd + '\r\n').encode())
+time.sleep(1.2)
+d = b''
+while True:
+    try:
+        c = s.recv(4096)
+    except OSError:
+        break
+    if not c:
+        break
+    d += c
+s.close()
+IAC = re.compile(rb'\xff[\xfd\xfb][\x20-\x7f]')
+sys.stdout.write(IAC.sub(b'', d).decode('latin-1', 'replace'))
+GSEOF
+
+canary_read() {  # raw injection log, or empty on no backdoor
+  timeout 12 python3 -I "$GEXEC" "$IP" 31338 \
+    'cat /firmadyne/os_cmd_injection_log 2>/dev/null' 2>/dev/null
+}
+CANARY_ARMED=0
+if timeout 3 bash -c "exec 3<>/dev/tcp/$IP/31338" 2>/dev/null; then
+  CANARY_ARMED=1
+  CANARY_RAW0=$(canary_read)
+  CANARY0=$(grep -acE '[0-9]{2}:[0-9]{2}:[0-9]{2}' <<<"$CANARY_RAW0")
+else
+  CANARY0=NA
+fi
 
 export TARGET_IP="$IP" TARGET_PORT="$PORT" POC_MARKER="$MARKER"
 LIVE_BEFORE=$(probe "$IP" "$PORT")
@@ -193,11 +255,19 @@ fi
 sleep 3   # delayed crashes / trailing execve may land shortly after the poc
 tail -c +$(( OFFSET + 1 )) "$SERIAL" > "$OUT/serial_segment.txt" 2>/dev/null || true
 grep -a '\[ANALYZE\] \[PID:' "$OUT/serial_segment.txt" > "$OUT/analyze_lines.txt" 2>/dev/null || true
-grep -a -E 'sending SIG(SEGV|BUS|ILL|FPE|KILL|TRAP)|Potentially unexpected fatal signal|Kernel panic|Oops:|BUG:|general protection fault' \
+grep -a -i -E 'sending SIG(SEGV|BUS|ILL|FPE|TRAP)|potentially unexpected fatal signal|kernel panic|oops:|bug:|general protection fault' \
   "$OUT/serial_segment.txt" > "$OUT/crash_lines.txt" 2>/dev/null || true
 # pre-run segment -> STAFF-style dry-run ignore list (pre-existing crashers)
 head -c "$OFFSET" "$SERIAL" 2>/dev/null | tail -c 262144 > "$OUT/pre_segment.txt" || true
 LIVE_AFTER=$(probe "$IP" "$PORT")
+# canary post-read (+3s more settle — a command injection may land late)
+CANARY1=NA
+if [ "$CANARY_ARMED" = 1 ]; then
+  sleep 3
+  CANARY_RAW1=$(canary_read)
+  printf '%s\n' "$CANARY_RAW1" > "$OUT/canary_log.txt"
+  CANARY1=$(grep -acE '[0-9]{2}:[0-9]{2}:[0-9]{2}' <<<"$CANARY_RAW1")
+fi
 
 # ------------------------------------------------------------- report ------
 export POCRUN_OUT="$OUT" POCRUN_POC="$POC" POCRUN_TYPE="$EXT" \
@@ -205,7 +275,8 @@ export POCRUN_OUT="$OUT" POCRUN_POC="$POC" POCRUN_TYPE="$EXT" \
        POCRUN_TIMEOUT="$TIMEOUT" POCRUN_QEMU_PID="$QEMU_PID" \
        POCRUN_SYSCALL="$SC" POCRUN_SERIAL="$SERIAL" POCRUN_MARKER="$MARKER" \
        POCRUN_LIVE_BEFORE="$LIVE_BEFORE" POCRUN_LIVE_AFTER="$LIVE_AFTER" \
-       POCRUN_TS="$TS"
+       POCRUN_CI_ARMED="$CI_ARMED" POCRUN_CANARY_ARMED="$CANARY_ARMED" \
+       POCRUN_CANARY0="$CANARY0" POCRUN_CANARY1="$CANARY1" POCRUN_TS="$TS"
 
 python3 - <<'PYEOF' > "$OUT/report.txt"
 import json, os, re, sys
@@ -214,9 +285,10 @@ out = os.environ['POCRUN_OUT']
 E = lambda k, d='': os.environ.get('POCRUN_' + k, d)
 marker = E('MARKER')
 
-CRASH_RE = re.compile(r'sending SIG(SEGV|BUS|ILL|FPE|KILL|TRAP)|'
-                      r'Potentially unexpected fatal signal|Kernel panic|'
-                      r'Oops:|BUG:|general protection fault')
+CRASH_RE = re.compile(r'sending SIG(SEGV|BUS|ILL|FPE|TRAP)|'
+                      r'potentially unexpected fatal signal|'
+                      r'kernel panic|oops:|bug:|general protection fault',
+                      re.IGNORECASE)
 
 def read_tail(path, n):
     try:
@@ -256,7 +328,14 @@ pre_fps = {crash_fp(l) for l in pre_lines if CRASH_RE.search(l)}
 # ---- verdict: FirmAE-fuzzer (CI) + STAFF (BOF) rules, fully deterministic
 marker_hits = [l for l in an_lines if marker and marker in l]
 canary_hits = [l for l in an_lines if argv0(l) in ('a', '/bin/a', './a')]
-ci = bool(marker_hits or canary_hits)
+canary_file = 0
+try:
+    if (E('CANARY_ARMED') == '1' and E('CANARY0', 'NA') != 'NA'
+            and E('CANARY1', 'NA') != 'NA'):
+        canary_file = int(E('CANARY1')) - int(E('CANARY0'))
+except ValueError:
+    canary_file = 0
+ci = bool(marker_hits or canary_hits or canary_file > 0)
 
 crash_ev = [{'line': l, 'pre_existing': crash_fp(l) in pre_fps} for l in cr_lines]
 bof_crashes = [c for c in crash_ev if not c['pre_existing']]
@@ -280,10 +359,19 @@ if marker_hits:
     parts.append('ci: marker %s in %d exec line(s)' % (marker, len(marker_hits)))
 if canary_hits:
     parts.append('ci: /bin/a canary executed (%d)' % len(canary_hits))
+if canary_file > 0:
+    parts.append('ci: canary injection-log +%d record(s) via guest backdoor' % canary_file)
 if bof_crashes:
     parts.append('bof: %s' % '; '.join(c['line'][:70] for c in bof_crashes[:3]))
 if result == 'service_down':
     parts.append('alive->dead without crash line (hang/DoS)')
+if canary_file < 0:
+    parts.append('WARNING: canary log SHRANK during the window — the guest REBOOTED mid-run; side-effect baselines are reset and this classification is unreliable (replay on a fresh boot, one poc per boot)')
+if E('CI_ARMED') != '1':
+    if E('CANARY_ARMED') == '1':
+        parts.append('note: execve audit off this boot — CI graded via canary injection-log (window attribution only, no token); BOF/DoS channels active')
+    else:
+        parts.append('note: CI channel inactive this boot (no firmadyne.syscall ANALYZE bit, no guest backdoor) — marker/canary not observable, BOF/DoS channels were active')
 detail = '; '.join(parts)
 
 try:
@@ -299,6 +387,7 @@ rep = {
     'verdict': {
         'result': result, 'ci': ci, 'bof': bof, 'service_down': service_down,
         'marker': marker, 'marker_hits': marker_hits, 'canary_hits': canary_hits,
+        'canary_file_delta': canary_file,
         'crashes': crash_ev, 'pre_existing_crashers_ignored':
             sum(1 for c in crash_ev if c['pre_existing']),
         'detail': detail,
