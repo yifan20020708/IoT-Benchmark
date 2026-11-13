@@ -48,9 +48,13 @@ Three image tiers, deliberately:
 Everything downstream keys off **`result.json`**, and the harness never
 trusts the agent:
 
-- Success means **`hverify`'s own** clean re-boot serves HTTP 200 to a plain
-  `curl -sL` (redirects followed — a 302 to a login page is healthy). The
-  agent's self-report is never sufficient.
+- Success means **`hverify`'s own** clean re-boot passes the **3-mode matrix**
+  — `run` (HTTP 200 to a plain `curl -sL`, redirects followed: a 302 to a
+  login page is healthy), `debug` (web + the guest backdoor `telnetd 31338`
+  echoes a command round-trip), and `analyze` (web + the serial log contains
+  `[ANALYZE]` execve lines, proving the `firmadyne.syscall=32` audit actually
+  records). All three must pass; the agent's self-report is never sufficient.
+  This matrix is what dynamic grading (`scripts/taint/poc-run.sh`) depends on.
 - The agent is killed at its wall-clock budget; the **on-disk state is then
   verified as-is**. A timed-out agent whose engine state still boots and
   serves counts as success.
@@ -71,8 +75,8 @@ trusts the agent:
 | `batch-run.sh` | Schedule a whole firmware tree: `--jobs N` work slots, skips tasks that already have `result.json` (delete it to retry), auto-promotes successes, per-task `batch.log`. Ctrl-C safe; resumable. |
 | `batch-monitor.sh` | Live dashboard for a batch root. Everything on screen is real state: `docker ps` containers, `result.json` history, host-side QEMU→container phase attribution. |
 | `run-solved.sh` | One-click boot of a `:solved` image (`--restart unless-stopped` self-healing). |
-| `emu.sh` / `emu-shell.sh` | Lab mode: enter a solved image without booting, then drive the emulation — `emu run / debug (guest root backdoor) / boot (gdbserver) / analyze / stop / status / serial / ip / verify`. |
-| `hverify.sh` | The harness verdict, also usable by the agent as self-check: clean re-boot, plain curl, only its own HTTP 200 passes. Baked/cp'd into every task container. |
+| `emu.sh` / `emu-shell.sh` | Lab mode: enter a solved image without booting, then drive the emulation — `emu run / debug (guest root backdoor) / boot (gdbserver) / analyze / debug-analyze (audit + backdoor in one boot = the full CI grading env) / stop / status / serial / ip / verify`. |
+| `hverify.sh` | The harness verdict, also usable by the agent as self-check: per-mode clean re-boots verifying the 3-mode matrix (run/debug/analyze); exits 0 only when all pass, writes per-mode verdicts to `/work/output/harness_mode_*`. Baked/cp'd into every task container. |
 | `emu-check.sh` | One-shot FirmAE-pro pipeline inside the container: extract → arch → image → network arbitration boots → final boot → web check. Result lands in `scratch/<iid>/result`. |
 | `solved-entrypoint.sh` | The `:solved` ENTRYPOINT: start PostgreSQL, then exec the pre-rendered `run.sh`. |
 | `docker-entrypoint.sh` | Base/task image ENTRYPOINT: start the baked PostgreSQL, then hand over to the container command. |

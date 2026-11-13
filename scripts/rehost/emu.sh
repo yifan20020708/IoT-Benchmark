@@ -9,6 +9,9 @@
 #   emu debug      debug boot; guest root backdoor: nc <ip> 31337 / telnet 31338
 #   emu boot       gdb-frozen boot (-s -S); gdbserver on :1234, attach + continue
 #   emu analyze    analysis boot (verbose kernel logging — watch `emu serial -f`)
+#   emu debug-analyze  COMPOSITE: analysis audit (syscall=32) AND the debug
+#                  backdoor in one boot — the full CI grading environment for
+#                  poc-run (token + canary-log channels simultaneously)
 #   emu stop       clean stop: TERM -> grace -> KILL; run.sh tears down its tap
 #   emu status     mode / QEMU pids / uptime / IP / web / backdoor port
 #   emu serial     tail the serial log (-f to follow)
@@ -20,7 +23,8 @@
 # Each mode execs the pre-rendered scratch/<iid>/run_<mode>.sh symlink in the
 # background (RUN_MODE switches on basename $0), from /opt/FirmAE-pro — never
 # from inside scratch/, whose relative paths would double. Mode switches
-# rewrite the guest's /firmadyne/debug.sh, so run/debug/boot/analyze may be
+# rewrite the guest's /firmadyne/debug.sh, so run/debug/boot/analyze (and the
+# debug-analyze composite) may be
 # interleaved freely as long as each boot is stopped first (emu enforces this).
 # State lives in /tmp/emu: mode, launcher pid, boot.log.
 #
@@ -75,7 +79,7 @@ port_open() { timeout 2 bash -c "</dev/tcp/$1/$2" 2>/dev/null; }
 web_code()  { curl -sL --max-redirs 5 -o /dev/null -w '%{http_code}' --max-time 5 "http://$1/" 2>/dev/null; }
 
 # ---------------------------------------------------------------------------
-# start <run|debug|boot|analyze>
+# start <run|debug|boot|analyze|debug-analyze>
 # ---------------------------------------------------------------------------
 cmd_start() {
     local mode="$1"
@@ -96,8 +100,15 @@ cmd_start() {
     ln -sf ./run.sh "$dir/run_debug.sh"
     ln -sf ./run.sh "$dir/run_boot.sh"
     ln -sf ./run.sh "$dir/run_analyze.sh"
+    # run.sh greps basename $0 for "analyze" and "debug" independently, so a
+    # name carrying both substrings boots audit + backdoor simultaneously
+    ln -sf ./run.sh "$dir/run_debug-analyze.sh"
     local entry="$dir/run.sh"
     [ "$mode" = run ] || entry="$dir/run_${mode}.sh"
+    # does this boot carry the debug backdoor? (substring, not equality —
+    # covers both `debug` and `debug-analyze`)
+    local has_backdoor=0
+    case "$mode" in *debug*) has_backdoor=1 ;; esac
 
     mkdir -p "$STATE"
     local IP; IP=$(guest_ips "$dir" | head -1)
@@ -109,7 +120,7 @@ cmd_start() {
     echo "$!" > "$STATE/pid"
     echo "$mode" > "$STATE/mode"
 
-    if [ "$mode" = run ] || [ "$mode" = debug ]; then
+    if [ "$mode" = run ] || [ "$has_backdoor" = 1 ]; then
         local start elapsed code cand
         start=$(date +%s)
         while :; do
@@ -125,13 +136,13 @@ cmd_start() {
                 code=$(web_code "$cand")
                 if [ "$code" = 200 ]; then
                     echo "emu: web ready after ${elapsed}s — http://$cand/"
-                    [ "$mode" = debug ] && {
+                    [ "$has_backdoor" = 1 ] && {
                         echo "  root shell : nc $cand 31337   (then: id, ls /, ...)"
                         echo "  telnet     : telnet $cand 31338"
                     }
                     return 0
                 fi
-                if [ "$mode" = debug ] && port_open "$cand" 31337; then
+                if [ "$has_backdoor" = 1 ] && port_open "$cand" 31337; then
                     echo "emu: backdoor ready after ${elapsed}s (web: $code)"
                     echo "  root shell : nc $cand 31337   (then: id, ls /, ...)"
                     echo "  telnet     : telnet $cand 31338"
@@ -206,7 +217,7 @@ cmd_status() {
         for c in $(guest_ips "$FIRMAE/scratch/$IID"); do
             echo "web      : HTTP $(web_code "$c") at http://$c/"
             port_open "$c" 31337 && echo "backdoor : nc $c 31337 OPEN" \
-                                   || echo "backdoor : closed (run/debug mode only)"
+                                   || echo "backdoor : closed (run/debug/debug-analyze modes only)"
         done
     else
         echo "qemu     : not running"
@@ -231,12 +242,13 @@ cmd_verify() {
 }
 
 usage() {
-    sed -n '3,25p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,31p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 case "${1:-}" in
     run)     shift; cmd_start run     "$@" ;;
     debug)   shift; cmd_start debug   "$@" ;;
+    debug-analyze) shift; cmd_start debug-analyze "$@" ;;
     boot)    shift; cmd_start boot    "$@" ;;
     analyze) shift; cmd_start analyze "$@" ;;
     stop)    shift; cmd_stop  "$@" ;;

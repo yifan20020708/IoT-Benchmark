@@ -310,6 +310,8 @@ result = {
         "ip": read("harness_ip"),
         "http_size": int(http_size) if http_size and http_size.isdigit() else None,
         "reason": read("harness_reason"),
+        "modes": {m: read("harness_mode_%s" % m, "not-run")
+                  for m in ("run", "debug", "analyze")},
     },
     "image": image,
     "container": container,
@@ -318,7 +320,7 @@ result = {
 try:
     t = json.load(open(os.path.join(outdir, "task.json")))
     result["agent"].update({k: t.get(k) for k in
-                            ("status", "iid", "ip", "diagnosis", "fixes", "iterations", "verified")
+                            ("status", "iid", "ip", "diagnosis", "fixes", "iterations", "verified", "modes")
                             if k in t})
 except Exception:
     pass
@@ -334,7 +336,9 @@ HARNESS=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["harnes
 echo
 echo "===== agent-scan: $TASK_ID ====="
 echo "status    : $STATUS   (exit code follows this)"
-echo "harness   : $HARNESS  (independent re-boot; ground truth)"
+MODES_LINE=""
+[ -f "$OUTDIR/harness_modes" ] && MODES_LINE="   [$(cat "$OUTDIR/harness_modes")]"
+echo "harness   : $HARNESS  (independent re-boot, 3-mode matrix; ground truth)$MODES_LINE"
 echo "agent     : rc=$AGENT_RC duration=${AGENT_DUR}s timeout=${TIMEOUT}s"
 echo "patch     : $OUTDIR/agent-fixes.patch"
 echo "result    : $FWDIR/result.json"

@@ -4,15 +4,29 @@
 # Runs AFTER the agent exits. Trusts nothing the agent produced — no
 # result/web/ping files, no task.yaml: those are the agent's claims, not
 # evidence. Instead this script re-boots the firmware from a clean process
-# state using the pre-rendered scratch/<iid>/run.sh and checks the web
-# service with plain curl (redirects followed — see the criterion note in
-# the poll loop). Ground truth = live QEMU + HTTP 200 + a real page.
+# state ONCE PER BOOT MODE and verifies the full mode matrix that dynamic
+# grading (scripts/taint/poc-run.sh) depends on:
+#
+#   run     : web answers HTTP 200 with a real page     (BOF/DoS channels,
+#             baseline — the classic success gate)
+#   debug   : web 200 ∧ guest backdoor (telnetd 31338)  (CI fallback channel:
+#             executes `echo <nonce>` and reads the nonce back — proves the
+#             /bin/a injection-log is readable, not just that a port opens)
+#   analyze : web 200 ∧ serial [ANALYZE] execve lines>0 (CI token channel:
+#             proves the firmadyne.syscall=32 jprobe audit is actually
+#             recording — a boot that stalls with zero audit lines FAILS,
+#             even if curl would have answered)
+#
+# HARD GATE: harness_result=true only when ALL THREE modes pass; each mode
+# gets its own verdict file so the agent sees the complete picture in one
+# pass (no stop-at-first-failure).
 #
 # Exit 0 = verified; exit 1 = not verified (reason in harness_reason).
 # Writes /work/output/{harness_result,harness_time_to_web,harness_ip,
-# harness_http_size,harness_reason} for the host-side harvest.
+# harness_http_size,harness_reason,harness_mode_{run,debug,analyze},
+# harness_modes} for the host-side harvest.
 #
-# Env: HARNESS_VERIFY_TIMEOUT  total budget in seconds (default 360)
+# Env: HARNESS_VERIFY_TIMEOUT  per-mode boot budget in seconds (default 360)
 set -u
 FIRMAE=/opt/FirmAE-pro
 OUT=/work/output
@@ -40,7 +54,7 @@ stop_qemu() {
     return 0
 }
 
-fail() {
+fail() {  # fatal infra error: no verdict matrix possible
     echo "harness_verify=false"
     # always leave an explicit verdict file — a missing file must never be
     # mistaken for "not run yet" or inherited from a previous run
@@ -54,6 +68,7 @@ fail() {
 
 IID=$(ls "$FIRMAE/scratch" 2>/dev/null | grep -E '^[0-9]+$' | sort -n | tail -1)
 [ -n "$IID" ] || fail "no-scratch-dir"
+WORK="$FIRMAE/scratch/$IID"
 # candidate IPs, both spellings: inferNetwork writes plain `ip`, but
 # makeNetwork writes `ip.0`, `ip.1`, ... when the LAN/web sits on a numbered
 # interface (observed on W30E: emulation healthy, harness aborted at the
@@ -61,59 +76,154 @@ IID=$(ls "$FIRMAE/scratch" 2>/dev/null | grep -E '^[0-9]+$' | sort -n | tail -1)
 # so every candidate is polled and the answering one is recorded.
 IPS=()
 _ipfile() { local v; v=$(cat "$1" 2>/dev/null); [ -n "$v" ] && IPS+=("$v"); return 0; }
-_ipfile "$FIRMAE/scratch/$IID/ip"
-for f in "$FIRMAE/scratch/$IID"/ip.[0-9]*; do
+_ipfile "$WORK/ip"
+for f in "$WORK"/ip.[0-9]*; do
     [ -f "$f" ] && _ipfile "$f"
 done
 [ ${#IPS[@]} -gt 0 ] || fail "no-ip-for-iid-$IID"
-[ -f "$FIRMAE/scratch/$IID/run.sh" ] || fail "no-run-sh"
-[ -f "$FIRMAE/scratch/$IID/image.raw" ] || fail "no-image-raw"
+[ -f "$WORK/run.sh" ] || fail "no-run-sh"
+[ -f "$WORK/image.raw" ] || fail "no-image-raw"
+# mode symlinks: run.sh switches on basename $0 ("analyze" -> syscall=32,
+# "debug" -> guest backdoor). FirmAE ships them; recreate defensively.
+ln -sf ./run.sh "$WORK/run_debug.sh"
+ln -sf ./run.sh "$WORK/run_analyze.sh"
 
-echo "harness: verifying iid=$IID ip=${IPS[*]} (budget ${BUDGET}s)"
+echo "harness: verifying iid=$IID ip=${IPS[*]} mode-matrix=run,debug,analyze (budget ${BUDGET}s each)"
 
-# clean slate: the agent may have left anything running behind.
-# A stale QEMU would hold the tap/IP and mask a broken final state.
-stop_qemu
-for t in $(ip -o link 2>/dev/null | awk -F': ' '$2 ~ /^tap[0-9]/ {print $2}'); do
-    ip link del "$t" 2>/dev/null
-done
-
-# boot: run.sh resolves its paths relative to FIRMAE_DIR — must cd there
-# (running it from inside scratch/<iid>/ doubles the relative path).
-cd "$FIRMAE" || fail "cd-firmae"
-./scratch/"$IID"/run.sh > /tmp/hverify-boot.log 2>&1 &
-
-start=$(date +%s)
-while :; do
-    sleep 5
-    elapsed=$(( $(date +%s) - start ))
-    [ "$elapsed" -ge "$BUDGET" ] && fail "timeout-${BUDGET}s-no-web"
-    # after the grace window, a missing QEMU means the boot itself broke
-    if [ "$elapsed" -ge "$GRACE" ] && ! qemu_alive; then
-        fail "qemu-died (boot log: $(tail -1 /tmp/hverify-boot.log 2>/dev/null))"
-    fi
-    # poll every candidate IP — the service answers on one of them.
-    # Redirects are followed: a vendor admin UI 302-ing / to its login page
-    # is a healthy web service (nearly every router/NVR does this); the OLD
-    # plain-/-must-200 criterion pushed agents into binary-patching the
-    # GUEST web server instead of emulating it faithfully. Redirect loops
-    # and dead redirect targets still fail naturally (curl error -> 000).
-    for IP in ${IPS[@]+"${IPS[@]}"}; do
-        code=$(curl -sL --max-redirs 5 -o /tmp/hverify-page.html -w '%{http_code}' \
-                    --max-time 8 "http://$IP/" 2>/dev/null)
-        if [ "$code" = "200" ]; then
-            size=$(wc -c < /tmp/hverify-page.html)
-            if [ "$size" -le 100 ]; then
-                fail "tiny-page-${size}B"
-            fi
-            echo true    > "$OUT/harness_result"
-            echo "$elapsed" > "$OUT/harness_time_to_web"
-            echo "$IP"    > "$OUT/harness_ip"
-            echo "$size"  > "$OUT/harness_http_size"
-            echo "harness: PASS — HTTP 200, ${size}B from http://$IP/ after ${elapsed}s"
-            # leave a clean, committable container behind (no running QEMU)
-            stop_qemu
-            exit 0
-        fi
+del_taps() {
+    for t in $(ip -o link 2>/dev/null | awk -F': ' '$2 ~ /^tap[0-9]/ {print $2}'); do
+        ip link del "$t" 2>/dev/null
     done
+}
+
+boot_and_wait_web() {  # boot_and_wait_web <entry> -> echo "<elapsed> <ip> <size>"
+    local entry="$1"
+    # clean slate between modes: a stale QEMU would hold the tap/IP and mask
+    # a broken final state
+    stop_qemu; del_taps
+    # boot: run.sh resolves its paths relative to FIRMAE_DIR — must cd there
+    # (running it from inside scratch/<iid>/ doubles the relative path)
+    cd "$FIRMAE" || return 1
+    "./scratch/$IID/$entry" > /tmp/hverify-boot.log 2>&1 &
+    local start elapsed code size IP
+    start=$(date +%s)
+    while :; do
+        sleep 5
+        elapsed=$(( $(date +%s) - start ))
+        [ "$elapsed" -ge "$BUDGET" ] && return 1
+        if [ "$elapsed" -ge "$GRACE" ] && ! qemu_alive; then
+            return 1
+        fi
+        # Redirects are followed: a vendor admin UI 302-ing / to its login
+        # page is a healthy web service; redirect loops / dead targets still
+        # fail naturally (curl error -> 000).
+        for IP in ${IPS[@]+"${IPS[@]}"}; do
+            code=$(curl -sL --max-redirs 5 -o /tmp/hverify-page.html -w '%{http_code}' \
+                        --max-time 8 "http://$IP/" 2>/dev/null)
+            if [ "$code" = "200" ]; then
+                size=$(wc -c < /tmp/hverify-page.html)
+                [ "$size" -gt 100 ] || return 1
+                echo "$elapsed $IP $size"
+                return 0
+            fi
+        done
+    done
+}
+
+backdoor_ok() {  # backdoor_ok <ip> — real exec round-trip via telnetd 31338
+    local ip="$1"
+    {
+        exec 3<>/dev/tcp/"$ip"/31338 || exit 1
+        printf 'echo HVNOK7x\r\n' >&3
+        sleep 1
+        timeout 3 cat <&3
+    } 2>/dev/null | grep -aq HVNOK7x
+}
+
+declare -A VERDICT
+for m in run debug analyze; do VERDICT[$m]="fail:not-run"; done
+
+# ---------------------------------------------------------------- run ------
+# boot log tail for reasons
+echo "harness: [1/3] mode run"
+if R=$(boot_and_wait_web run.sh); then
+    read -r WEB_T WEB_IP WEB_SIZE <<<"$R"
+    VERDICT[run]="pass"
+    echo "  run PASS — HTTP 200 ${WEB_SIZE}B from $WEB_IP after ${WEB_T}s"
+else
+    VERDICT[run]="fail:web-not-serving"
+    echo "  run FAIL — $(tail -1 /tmp/hverify-boot.log 2>/dev/null)"
+fi
+
+# -------------------------------------------------------------- debug ------
+echo "harness: [2/3] mode debug (web + backdoor exec)"
+if R=$(boot_and_wait_web run_debug.sh); then
+    read -r D_T D_IP D_SIZE <<<"$R"
+    bok=0
+    for _t in 1 2 3; do
+        backdoor_ok "$D_IP" && { bok=1; break; }
+        sleep 5
+    done
+    if [ "$bok" = 1 ]; then
+        VERDICT[debug]="pass"
+        echo "  debug PASS — web ${D_SIZE}B after ${D_T}s, backdoor exec confirmed on $D_IP"
+    else
+        VERDICT[debug]="fail:backdoor-exec-unreachable"
+        echo "  debug FAIL — web ok but telnetd 31338 exec check failed on $D_IP"
+    fi
+else
+    VERDICT[debug]="fail:web-not-serving"
+    echo "  debug FAIL — $(tail -1 /tmp/hverify-boot.log 2>/dev/null)"
+fi
+
+# ------------------------------------------------------------- analyze -----
+echo "harness: [3/3] mode analyze (web + execve audit lines)"
+if R=$(boot_and_wait_web run_analyze.sh); then
+    read -r A_T A_IP A_SIZE <<<"$R"
+    # serial file is O_TRUNC'd by each QEMU start -> everything in it is
+    # from THIS boot. Audit must actually record: >0 [ANALYZE] lines.
+    sleep 3
+    AC=$(grep -ac '\[ANALYZE\] \[PID:' "$WORK/qemu.final.serial.log" 2>/dev/null || true)
+    AC=${AC:-0}
+    if [ "$AC" -gt 0 ]; then
+        VERDICT[analyze]="pass"
+        echo "  analyze PASS — web ${A_SIZE}B after ${A_T}s, $AC [ANALYZE] execve line(s)"
+    else
+        VERDICT[analyze]="fail:zero-execve-audit-lines"
+        echo "  analyze FAIL — web ok but ZERO [ANALYZE] lines: audit not serving (stalled boot?)"
+    fi
+else
+    VERDICT[analyze]="fail:web-not-serving"
+    echo "  analyze FAIL — $(tail -1 /tmp/hverify-boot.log 2>/dev/null)"
+fi
+stop_qemu
+
+# ------------------------------------------------------------ verdict ------
+ALLPASS=1
+MODES=""
+for m in run debug analyze; do
+    echo "${VERDICT[$m]}" > "$OUT/harness_mode_$m"
+    MODES="$MODES $m=${VERDICT[$m]}"
+    [ "${VERDICT[$m]}" = "pass" ] || ALLPASS=0
 done
+echo "$MODES" | sed 's/^ //' > "$OUT/harness_modes"
+
+if [ "$ALLPASS" = 1 ]; then
+    echo true > "$OUT/harness_result"
+    echo "$WEB_T" > "$OUT/harness_time_to_web"
+    echo "$WEB_IP" > "$OUT/harness_ip"
+    echo "$WEB_SIZE" > "$OUT/harness_http_size"
+    echo "harness: PASS — mode matrix complete:$MODES"
+    exit 0
+else
+    # main web evidence still recorded when run-mode passed (useful for triage)
+    if [ "${VERDICT[run]}" = "pass" ]; then
+        echo "$WEB_T" > "$OUT/harness_time_to_web"
+        echo "$WEB_IP" > "$OUT/harness_ip"
+        echo "$WEB_SIZE" > "$OUT/harness_http_size"
+    fi
+    echo false > "$OUT/harness_result"
+    echo "mode-matrix incomplete:$MODES" > "$OUT/harness_reason"
+    echo "harness: FAIL — mode-matrix incomplete:$MODES"
+    exit 1
+fi
