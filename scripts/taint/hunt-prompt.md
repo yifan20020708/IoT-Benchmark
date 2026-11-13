@@ -86,6 +86,12 @@ the container — reach it directly (curl, python), never from outside.
   emu debug-analyze    boot: kernel audit + guest backdoor both on (best
                        channels for the deterministic grader)
   emu stop / emu status / emu serial -f / emu ip
+
+A debug boot leaves guest-side doors open: telnet to port 31338 gives a
+root shell (`/firmadyne/sh`), and /opt/FirmAE-pro/binaries/ holds a
+matching gdb, gdbserver and busybox for every architecture — push the
+gdbserver through that shell and you can breakpoint the live daemon
+instead of guessing what its code does with your bytes.
 ```
 
 Every fresh boot requires re-running `auth.json`'s acquisition steps
