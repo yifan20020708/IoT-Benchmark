@@ -231,8 +231,11 @@ canary_read() {  # raw injection log, or empty on no backdoor
 CANARY_ARMED=0
 if timeout 3 bash -c "exec 3<>/dev/tcp/$IP/31338" 2>/dev/null; then
   CANARY_ARMED=1
-  CANARY_RAW0=$(canary_read)
-  CANARY0=$(grep -acE '[0-9]{2}:[0-9]{2}:[0-9]{2}' <<<"$CANARY_RAW0")
+  if CANARY_RAW0=$(canary_read); then
+    CANARY0=$(grep -acE '[0-9]{2}:[0-9]{2}:[0-9]{2}' <<<"$CANARY_RAW0")
+  else
+    CANARY0=NA   # baseline unreadable (backdoor flaked) — never let a 0-line
+  fi             # ghost baseline inflate the delta into a CI verdict
 else
   CANARY0=NA
 fi
@@ -291,8 +294,19 @@ grep -a -i -E 'sending SIG(SEGV|BUS|ILL|FPE|TRAP)|potentially unexpected fatal s
 REBOOTS=$(grep -acE 'firmadyne: sys_reboot|removed CAP_SYS_BOOT|Requesting system reboot|Linux version' "$OUT/serial_segment.txt" 2>/dev/null || true)
 REBOOTS=${REBOOTS:-0}
 # pre-run segment -> STAFF-style dry-run ignore list (pre-existing crashers)
-head -c "$OFFSET" "$SERIAL" 2>/dev/null | tail -c 262144 > "$OUT/pre_segment.txt" || true
+head -c "$OFFSET" "$SERIAL" > "$OUT/pre_segment.txt" 2>/dev/null || true
 LIVE_AFTER=$(probe "$IP" "$PORT")
+LIVE_PROBES=1
+LIVE_CONFIRM=""
+if [ "$LIVE_AFTER" = dead ]; then     # confirm handshake: a single 3s-timeout
+  for _t in 2 3; do                   # connect can blip under host load —
+    sleep 2                           # dead must be seen 3-for-3 to count
+    LIVE_PROBES=$_t
+    if [ "$(probe "$IP" "$PORT")" = alive ]; then
+      LIVE_AFTER=alive; LIVE_CONFIRM="respawned_on_retry"; break
+    fi
+  done
+fi
 # canary post-read (+3s more settle — a command injection may land late)
 CANARY1=NA
 if [ "$CANARY_ARMED" = 1 ]; then
@@ -308,6 +322,7 @@ export POCRUN_OUT="$OUT" POCRUN_POC="$POC" POCRUN_TYPE="$EXT" \
        POCRUN_TIMEOUT="$TIMEOUT" POCRUN_QEMU_PID="$QEMU_PID" \
        POCRUN_SYSCALL="$SC" POCRUN_SERIAL="$SERIAL" POCRUN_MARKER="$MARKER" \
        POCRUN_LIVE_BEFORE="$LIVE_BEFORE" POCRUN_LIVE_AFTER="$LIVE_AFTER" \
+       POCRUN_LIVE_PROBES="$LIVE_PROBES" POCRUN_LIVE_CONFIRM="$LIVE_CONFIRM" \
        POCRUN_CI_ARMED="$CI_ARMED" POCRUN_CANARY_ARMED="$CANARY_ARMED" \
        POCRUN_CANARY0="$CANARY0" POCRUN_CANARY1="$CANARY1" POCRUN_TS="$TS" \
        POCRUN_REBOOTS="$REBOOTS"
@@ -345,19 +360,52 @@ def argv0(line):  # first token of an [ANALYZE] line's argv
     i = line.find(']: ')
     return line[i + 3:].split()[0] if i >= 0 else ''
 
-def crash_fp(line):
-    m = re.search(r'sending (SIG\w+) to (\S+)', line)
+TS_RE  = re.compile(r'^\[\s*[\d.]+\]\s*')
+SIGMAP = {'4': 'ILL', '5': 'TRAP', '6': 'ABRT', '7': 'BUS', '8': 'FPE',
+          '11': 'SEGV'}
+
+def _comm_after(lines, i):
+    for j in range(i + 1, min(i + 14, len(lines))):
+        cm = re.search(r'Comm:\s+(\S+)', lines[j])
+        if cm:
+            return cm.group(1)
+        if CRASH_RE.search(lines[j]):
+            break
+    return '?'
+
+def crash_fp(lines, i):
+    # fingerprint = (signal, crashing comm) with the [uptime] prefix
+    # stripped: survives timestamp jitter (v2 ARM fingerprints embedded
+    # the uptime -> suppression never fired) and pins the 'bug:' substring
+    # match to its real crash context
+    s = TS_RE.sub('', lines[i])
+    m = re.search(r'sending (SIG\w+) to (\S+)', s)
     if m:
         return '%s %s' % (m.group(1), m.group(2))
-    m = re.search(r'Potentially unexpected fatal signal (\d+)', line)
+    m = re.search(r'fatal signal (\d+)', s, re.I)
     if m:
-        return 'fatalsig %s' % m.group(1)
-    return line[:60]
+        return 'SIG%s %s' % (SIGMAP.get(m.group(1), m.group(1)),
+                             _comm_after(lines, i))
+    m = re.search(r'kernel panic - not syncing: (\S.{0,50})', s, re.I)
+    if m:
+        return 'panic %s' % m.group(1)
+    m = re.search(r'internal error: (oops|section fault|prefetch abort)', s, re.I)
+    if m:
+        return '%s %s' % (m.group(1).lower(), _comm_after(lines, i))
+    return 'misc %s' % s[:60]
 
 an_lines, an_total = read_lines(out + '/analyze_lines.txt', 400)
 cr_lines, cr_total = read_lines(out + '/crash_lines.txt', 200)
-pre_lines, _ = read_lines(out + '/pre_segment.txt', 3000)
-pre_fps = {crash_fp(l) for l in pre_lines if CRASH_RE.search(l)}
+
+def read_all(path):
+    try:
+        with open(path, 'rb') as f:
+            return f.read(16777216).decode('utf-8', 'replace').splitlines()
+    except OSError:
+        return []
+
+pre_seg = read_all(out + '/pre_segment.txt')
+pre_fps = {crash_fp(pre_seg, i) for i, l in enumerate(pre_seg) if CRASH_RE.search(l)}
 
 # ---- verdict: FirmAE-fuzzer (CI) + STAFF (BOF) rules, fully deterministic
 marker_hits = [l for l in an_lines if marker and marker in l]
@@ -371,7 +419,13 @@ except ValueError:
     canary_file = 0
 ci = bool(marker_hits or canary_hits or canary_file > 0)
 
-crash_ev = [{'line': l, 'pre_existing': crash_fp(l) in pre_fps} for l in cr_lines]
+seg_lines = read_all(out + '/serial_segment.txt')
+crash_ev = []
+for _i, _l in enumerate(seg_lines):
+    if not CRASH_RE.search(_l):
+        continue
+    _fp = crash_fp(seg_lines, _i)
+    crash_ev.append({'line': _l, 'fp': _fp, 'pre_existing': _fp in pre_fps})
 bof_crashes = [c for c in crash_ev if not c['pre_existing']]
 bof = bool(bof_crashes)
 
@@ -437,7 +491,7 @@ stderr_t = read_tail(out + '/stderr.txt', 16384)
 compile_log = read_tail(out + '/compile.log', 8192)
 
 rep = {
-    'tool': 'poc-run', 'version': 2, 'ts': E('TS'),
+    'tool': 'poc-run', 'version': 3, 'ts': E('TS'),
     'verdict': {
         'result': result, 'ci': ci, 'bof': bof, 'service_down': service_down,
         'reboot_events': reboot_events, 'reboot_in_window': reboot_in_window,
@@ -455,7 +509,9 @@ rep = {
     'target': {'ip': os.environ.get('TARGET_IP'), 'port': os.environ.get('TARGET_PORT')},
     'boot': {'qemu_pid': int(E('QEMU_PID', '0')), 'firmadyne_syscall': E('SYSCALL'),
              'serial': E('SERIAL')},
-    'liveness': {'before': before, 'after': after},
+    'liveness': {'before': before, 'after': after,
+                 'probes': int(E('LIVE_PROBES', '1')),
+                 'confirm': E('LIVE_CONFIRM') or None},
     'serial_evidence': {
         'segment_bytes': seg_bytes,
         'analyze_events': an_total, 'analyze_lines': an_lines,
@@ -483,7 +539,7 @@ print('poc:      %s  type=%s  status=%s  exit=%s  wall=%dms  timeout=%ss'
 print('target:   %s:%s  (qemu pid %s, firmadyne.syscall=%s, marker=%s)'
       % (os.environ.get('TARGET_IP'), os.environ.get('TARGET_PORT'),
          E('QEMU_PID'), E('SYSCALL'), marker))
-print('liveness: before=%s  after=%s' % (before, after))
+print('liveness: before=%s  after=%s (probes=%s%s)' % (before, after, E('LIVE_PROBES'), (' ' + E('LIVE_CONFIRM')) if E('LIVE_CONFIRM') else ''))
 if stdout_t:
     show('poc stdout', stdout_t, 30)
 if stderr_t:
