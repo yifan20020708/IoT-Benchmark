@@ -26,8 +26,12 @@
 # artifact that remains (its layer chain still shares firmae-base layers).
 #
 # The solved image is the complete agent world for the next phase:
-#   dynamic side — emu {run,debug,boot,analyze,stop,status,...}
+#   dynamic side — emu {run,debug,boot,analyze,debug-analyze,stop,status,...}
 #   static side  — /home/{rootfs,decompiled-rootfs,scripts,workspace}
+#   poc side     — /work/{poc,poc-runs} (poc sources | grading evidence)
+# NOT baked by design: scripts/taint/poc-run.sh and the decompiled-rootfs
+# mirror are host-side standing assets — `docker cp` them at derive time so
+# grading always replays the CURRENT script, never a stale baked copy.
 set -euo pipefail
 
 FWDIR="${1:?usage: commit-solved.sh <fw-folder>}"
@@ -61,6 +65,8 @@ docker exec "$CONTAINER" bash -c '
 rm -rf /root/.claude /root/.claude.json /root/.cache /root/.npm
 rm -rf /home/workspace/.claude
 rm -rf /tmp/* 2>/dev/null || true
+# Phase-2 workspace skeleton (baked empty; content arrives at derive/run time)
+mkdir -p /work/poc /work/poc-runs /home/workspace
 service postgresql stop >/dev/null 2>&1 || true
 '
 
@@ -97,5 +103,9 @@ echo "result    : $FWDIR/result.json image/container fields updated"
 echo "guest ip  : $IP"
 echo "one-click : docker run -d --init --privileged --device /dev/kvm -v /dev:/dev --restart unless-stopped $IMAGE"
 echo "lab mode  : docker run -d --init --privileged --device /dev/kvm -v /dev:/dev --entrypoint /usr/local/bin/emu-shell $IMAGE"
-echo "             then: docker exec -it <ctr> emu run   (or debug / boot / analyze)"
+echo "             then: docker exec -it <ctr> emu run   (or debug / boot / analyze / debug-analyze)"
+echo "derive    : same as lab mode, plus the not-baked assets copied in:"
+echo "             docker cp scripts/taint/poc-run.sh <ctr>:/usr/local/bin/poc-run"
+echo "             docker cp <host-decompiled-rootfs>/. <ctr>:/home/decompiled-rootfs/"
+echo "             pocs -> /work/poc | grading evidence -> /work/poc-runs (--out-root)"
 exit 0

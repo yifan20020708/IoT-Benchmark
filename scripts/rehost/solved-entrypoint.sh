@@ -40,6 +40,10 @@ for t in $(ip -o link 2>/dev/null | awk -F': ' '$2 ~ /^tap[0-9]/ {print $2}'); d
     ip link del "$t" 2>/dev/null || true
 done
 
+# 3b. Phase-2 workspace skeleton (idempotent — baked at commit-solved,
+#     recreated if this image was committed by an older flow)
+mkdir -p /work/poc /work/poc-runs /home/workspace 2>/dev/null || true
+
 # 4. run.sh resolves paths relative to FIRMAE_DIR and blocks on QEMU
 cd "$FIRMAE"
 exec ./scratch/"$IID"/run.sh

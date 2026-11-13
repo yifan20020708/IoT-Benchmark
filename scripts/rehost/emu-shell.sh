@@ -14,6 +14,12 @@
 # PostgreSQL must be up before any emu boot (run.sh queries it for the
 # filesystem/kernel paths), so it is started here; `emu` retries on its own
 # in case it died since. Interactive runs (docker run -it) land in a shell.
+#
+# Derive-time convention (assets NOT baked into the solved image):
+#   docker cp scripts/taint/poc-run.sh  <ctr>:/usr/local/bin/poc-run
+#   docker cp <decompiled-rootfs>/.     <ctr>:/home/decompiled-rootfs/
+# Phase-2 paths: pocs -> /work/poc, grading evidence -> /work/poc-runs
+# (poc-run --out-root), agent scratch -> /home/workspace.
 set -u
 
 service postgresql start >/dev/null 2>&1 || true
@@ -26,7 +32,9 @@ if pg_isready -q -h 127.0.0.1; then
 else
     echo "[lab] WARN: PostgreSQL not ready — emu will retry on start"
 fi
-echo "[lab] emulation idle — drive it with: emu run | debug | boot | analyze | status | serial | stop"
+mkdir -p /work/poc /work/poc-runs /home/workspace 2>/dev/null || true
+echo "[lab] emulation idle — drive it with: emu run | debug | boot | analyze | debug-analyze | status | serial | stop"
+echo "[lab] paths   : pocs -> /work/poc | evidence -> /work/poc-runs | scratch -> /home/workspace"
 
 if [ -t 0 ]; then
     exec bash

@@ -165,3 +165,30 @@ timestamps, agent details, harness verdict) and `output/`
 
 Timing reality: a single task runs minutes-to-hours under TCG — budget 1–4 h;
 a solved image boots its web service in ~1–2 minutes.
+
+## Solved-image layout (the next-phase agent world)
+
+```
+/work/task.json       task metadata (read-only)
+/work/output/         raw-stage harvest (historical; never rewritten)
+/work/poc/            Phase-2 agent writes PoCs here — the only graded artifact dir
+/work/poc-runs/       grading evidence root (pass `--out-root /work/poc-runs` to poc-run;
+                      exploration runs may keep the default /tmp/poc-runs)
+/home/rootfs/         unpacked firmware rootfs (static side)
+/home/workspace/      agent scratch (notes, temp tools)
+/opt/FirmAE-pro/      frozen engine + scratch/<iid> artifacts (read-only in Phase-2)
+/usr/local/bin/       emu / emu-shell / hverify / solved-entrypoint / emu-check
+```
+
+Intentionally NOT baked into the image — injected at derive time from
+host-side standing assets, so grading always replays the CURRENT script:
+
+```
+docker cp scripts/taint/poc-run.sh          <ctr>:/usr/local/bin/poc-run
+docker cp <host-decompiled-rootfs>/.        <ctr>:/home/decompiled-rootfs/
+```
+
+Grading flow (final criterion): one poc per fresh boot — derive a container,
+boot, `docker cp` the single poc into `/work/poc/`, run
+`poc-run /work/poc/<f> --out-root /work/poc-runs`, harvest
+`docker cp <ctr>:/work` to the task folder.
