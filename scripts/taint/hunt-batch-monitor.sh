@@ -174,13 +174,19 @@ run.sort(key=lambda r: -r[2])
 if batch_fresh:
     b_total = st.get("total", n)
     b_started = st.get("started_at", 0)
+    # in-batch = this batch RAN the unit's hunt (fresh run/result.json):
+    # an out-of-scope unit whose verify/result.json was refreshed later by
+    # e.g. a standalone verify-run --no-report replay must not inflate the
+    # batch scoreboard (else "18/16 graded")
     graded_units = [u for u in units if uinfo[u]["verify"]
-                    and uinfo[u]["v_mtime"] >= b_started and u not in running_units]
+                    and uinfo[u]["v_mtime"] >= b_started
+                    and (uinfo[u].get("h_mtime") or 0) >= b_started
+                    and u not in running_units]
 else:
     b_total = n
     graded_units = [u for u in units if uinfo[u]["verify"] and u not in running_units]
 running_now  = [u for u in units if u in running_units]
-pending      = b_total - len(graded_units) - len(running_now)
+pending      = max(0, b_total - len(graded_units) - len(running_now))
 tot_pocs     = sum(info["pocs"] for info in uinfo.values())
 all_verdicts = [v for info in uinfo.values() for v in info["graded"]]
 hits         = sum(1 for v in all_verdicts if v in ("TRIGGERED", "service_down"))
