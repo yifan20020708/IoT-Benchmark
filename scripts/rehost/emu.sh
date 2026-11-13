@@ -8,10 +8,16 @@
 #   emu run        normal boot; waits for the web service, prints IP + URL
 #   emu debug      debug boot; guest root backdoor: nc <ip> 31337 / telnet 31338
 #   emu boot       gdb-frozen boot (-s -S); gdbserver on :1234, attach + continue
-#   emu analyze    analysis boot (verbose kernel logging — watch `emu serial -f`)
-#   emu debug-analyze  COMPOSITE: analysis audit (syscall=32) AND the debug
-#                  backdoor in one boot — the full CI grading environment for
-#                  poc-run (token + canary-log channels simultaneously)
+#   emu analyze    [DEPRECATED — engine forensics only, NOT a grading mode]
+#                  boot with the kernel execve audit (syscall=32). Measured
+#                  on our kernels the audit records the boot/initrd phase
+#                  only, then goes silent (MIPS wr841n) or page-domain-
+#                  faults execve_hook on every later execve (ARM AC15;
+#                  W30E loses init at ~0.8s). Nothing in the pipeline
+#                  grades or verifies against it.
+#   emu debug-analyze  audit + backdoor composite — do not build on it:
+#                  on tested images the audit fault kills debug.sh and
+#                  the 31338 backdoor dies minutes into the boot.
 #   emu stop       clean stop: TERM -> grace -> KILL; run.sh tears down its tap
 #   emu status     mode / QEMU pids / uptime / IP / web / backdoor port
 #   emu serial     tail the serial log (-f to follow)

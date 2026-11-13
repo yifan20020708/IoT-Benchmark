@@ -8,7 +8,7 @@
 #
 #   docker run -d --init --privileged --device /dev/kvm -v /dev:/dev \
 #       --entrypoint /usr/local/bin/emu-shell task-<name>:solved
-#   docker exec -it <ctr> emu run          # or: debug | boot | analyze
+#   docker exec -it <ctr> emu run          # or: debug | boot
 #   docker exec -it <ctr> emu status | emu serial -f
 #
 # PostgreSQL must be up before any emu boot (run.sh queries it for the
@@ -33,7 +33,7 @@ else
     echo "[lab] WARN: PostgreSQL not ready — emu will retry on start"
 fi
 mkdir -p /work/poc /work/poc-runs /home/workspace 2>/dev/null || true
-echo "[lab] emulation idle — drive it with: emu run | debug | boot | analyze | debug-analyze | status | serial | stop"
+echo "[lab] emulation idle — drive it with: emu run | debug | boot | status | serial | stop   (grading boots in debug; `emu` help lists two audit modes as deprecated forensics)"
 echo "[lab] paths   : pocs -> /work/poc | evidence -> /work/poc-runs | scratch -> /home/workspace"
 
 if [ -t 0 ]; then

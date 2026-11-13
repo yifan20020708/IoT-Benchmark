@@ -4,26 +4,26 @@
 # Runs AFTER the agent exits. Trusts nothing the agent produced — no
 # result/web/ping files, no task.yaml: those are the agent's claims, not
 # evidence. Instead this script re-boots the firmware from a clean process
-# state ONCE PER BOOT MODE and verifies the full mode matrix that dynamic
-# grading (scripts/taint/poc-run.sh) depends on:
+# state ONCE PER BOOT MODE and verifies the mode matrix that deterministic
+# grading (scripts/taint/poc-run.sh) actually rides:
 #
-#   run     : web answers HTTP 200 with a real page     (BOF/DoS channels,
-#             baseline — the classic success gate)
-#   debug   : web 200 ∧ guest backdoor (telnetd 31338)  (CI fallback channel:
-#             executes `echo <nonce>` and reads the nonce back — proves the
-#             /bin/a injection-log is readable, not just that a port opens)
-#   analyze : web 200 ∧ serial [ANALYZE] execve lines>0 (CI token channel:
-#             proves the firmadyne.syscall=32 jprobe audit is actually
-#             recording — a boot that stalls with zero audit lines FAILS,
-#             even if curl would have answered)
+#   run    : web answers HTTP 200 with a real page     (BOF/DoS channels,
+#            baseline — the classic success gate)
+#   debug  : web 200 ∧ guest backdoor (telnetd 31338)  (the CI/canary
+#            channel — grading boots here): executes `echo <nonce>` and
+#            reads the nonce back — proves the /bin/a injection log is
+#            READABLE end-to-end, not just that a port opens
 #
-# HARD GATE: harness_result=true only when ALL THREE modes pass; each mode
+# HARD GATE: harness_result=true only when BOTH modes pass; each mode
 # gets its own verdict file so the agent sees the complete picture in one
-# pass (no stop-at-first-failure).
+# pass (no stop-at-first-failure). The kernel execve audit ("analyze") is
+# NOT gated on: measured 2026-11-13 it only records the boot/initrd phase
+# on our ARM and MIPS kernels and goes silent (or faults) at the root
+# pivot, so no grading channel depends on it — debug is the CI mode.
 #
 # Exit 0 = verified; exit 1 = not verified (reason in harness_reason).
 # Writes /work/output/{harness_result,harness_time_to_web,harness_ip,
-# harness_http_size,harness_reason,harness_mode_{run,debug,analyze},
+# harness_http_size,harness_reason,harness_mode_{run,debug},
 # harness_modes} for the host-side harvest.
 #
 # Env: HARNESS_VERIFY_TIMEOUT  per-mode boot budget in seconds (default 360)
@@ -83,12 +83,11 @@ done
 [ ${#IPS[@]} -gt 0 ] || fail "no-ip-for-iid-$IID"
 [ -f "$WORK/run.sh" ] || fail "no-run-sh"
 [ -f "$WORK/image.raw" ] || fail "no-image-raw"
-# mode symlinks: run.sh switches on basename $0 ("analyze" -> syscall=32,
-# "debug" -> guest backdoor). FirmAE ships them; recreate defensively.
+# mode symlinks: run.sh switches on basename $0 ("debug" -> guest backdoor).
+# FirmAE ships them; recreate defensively.
 ln -sf ./run.sh "$WORK/run_debug.sh"
-ln -sf ./run.sh "$WORK/run_analyze.sh"
 
-echo "harness: verifying iid=$IID ip=${IPS[*]} mode-matrix=run,debug,analyze (budget ${BUDGET}s each)"
+echo "harness: verifying iid=$IID ip=${IPS[*]} mode-matrix=run,debug (budget ${BUDGET}s each)"
 
 del_taps() {
     for t in $(ip -o link 2>/dev/null | awk -F': ' '$2 ~ /^tap[0-9]/ {print $2}'); do
@@ -141,11 +140,11 @@ backdoor_ok() {  # backdoor_ok <ip> — real exec round-trip via telnetd 31338
 }
 
 declare -A VERDICT
-for m in run debug analyze; do VERDICT[$m]="fail:not-run"; done
+for m in run debug; do VERDICT[$m]="fail:not-run"; done
 
 # ---------------------------------------------------------------- run ------
 # boot log tail for reasons
-echo "harness: [1/3] mode run"
+echo "harness: [1/2] mode run"
 if R=$(boot_and_wait_web run.sh); then
     read -r WEB_T WEB_IP WEB_SIZE <<<"$R"
     VERDICT[run]="pass"
@@ -156,7 +155,7 @@ else
 fi
 
 # -------------------------------------------------------------- debug ------
-echo "harness: [2/3] mode debug (web + backdoor exec)"
+echo "harness: [2/2] mode debug (web + backdoor exec)"
 if R=$(boot_and_wait_web run_debug.sh); then
     read -r D_T D_IP D_SIZE <<<"$R"
     bok=0
@@ -176,32 +175,13 @@ else
     echo "  debug FAIL — $(tail -1 /tmp/hverify-boot.log 2>/dev/null)"
 fi
 
-# ------------------------------------------------------------- analyze -----
-echo "harness: [3/3] mode analyze (web + execve audit lines)"
-if R=$(boot_and_wait_web run_analyze.sh); then
-    read -r A_T A_IP A_SIZE <<<"$R"
-    # serial file is O_TRUNC'd by each QEMU start -> everything in it is
-    # from THIS boot. Audit must actually record: >0 [ANALYZE] lines.
-    sleep 3
-    AC=$(grep -ac '\[ANALYZE\] \[PID:' "$WORK/qemu.final.serial.log" 2>/dev/null || true)
-    AC=${AC:-0}
-    if [ "$AC" -gt 0 ]; then
-        VERDICT[analyze]="pass"
-        echo "  analyze PASS — web ${A_SIZE}B after ${A_T}s, $AC [ANALYZE] execve line(s)"
-    else
-        VERDICT[analyze]="fail:zero-execve-audit-lines"
-        echo "  analyze FAIL — web ok but ZERO [ANALYZE] lines: audit not serving (stalled boot?)"
-    fi
-else
-    VERDICT[analyze]="fail:web-not-serving"
-    echo "  analyze FAIL — $(tail -1 /tmp/hverify-boot.log 2>/dev/null)"
-fi
+# clean shutdown before the host harvests / commits the solved image
 stop_qemu
 
 # ------------------------------------------------------------ verdict ------
 ALLPASS=1
 MODES=""
-for m in run debug analyze; do
+for m in run debug; do
     echo "${VERDICT[$m]}" > "$OUT/harness_mode_$m"
     MODES="$MODES $m=${VERDICT[$m]}"
     [ "${VERDICT[$m]}" = "pass" ] || ALLPASS=0

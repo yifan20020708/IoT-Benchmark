@@ -63,26 +63,15 @@ deterministic oracle here and are not findings.
 
 ## Known engine defects (measured, not assumed)
 
-- **ARM kernels fault in `execve_hook` at the first user-space execve
-  after the root pivot** (`Unhandled fault: page domain fault (0x01b)`,
-  `PC is at execve_hook+0x194`, dereferencing a user argv pointer with
-  the domain unopened). On W30E that execve is init's own: the kernel
-  dies at ~0.8 s and debug-analyze never serves. On AC15 (kernel
-  4.4.298, fixed image) analyze boots and `[ANALYZE]` lines appear —
-  but ONLY for initrd-phase execves; in vendor rootfs every user execve
-  faults the hook (measured: 75 oopses in 5 min, zero execve lines after
-  pivot) and the fault lands ON the syscall path, so it can abort the
-  very injected command an analyze boot is trying to grade.
-  `debug-analyze` is not a workaround: debug.sh takes the same 0x01b
-  fault and the telnetd backdoor dies within ~2 min. Consequences: the
-  **token CI channel is structurally unusable on both ARM targets** —
-  boot-phase [ANALYZE] lines are NOT runtime liveness (an image-mode
-  gate counting them false-passes); CI grading is carried by the
-  canary-file channel (debug boot, telnetd 31338) — and a token-only CI
-  is invisible (rc=1) on debug boots by contract, which is why the
-  archive contract wants the canary form (`;a;$POC_MARKER;#`).
-  `verify-run.sh` defaults to `emu debug` for exactly this reason;
-  hunt-prompt.md documents the fallback decision rule.
+- **The kernel execve audit never records at runtime on our engines.**
+  `[ANALYZE]` lines appear only for the boot/initrd phase; at the root
+  pivot the hook goes silent (measured on MIPS wr841n) or page-domain-
+  faults on every execve (ARM AC15; on W30E it kills init at ~0.8 s).
+  Therefore `analyze` / `debug-analyze` are not grading modes anywhere
+  in this pipeline: **everything rides `emu debug`** — CI = the canary
+  file read over the backdoor, BOF = the crash line, DoS = liveness.
+  (The token clause in the rc=0 row above is what the script *can*
+  match, not what will fire on these targets.)
 - Booting `:solved` twice in one container is a lie: FirmAE's reboot
   interception is an **in-place init restart** — kernel uptime continues,
   no second `Linux version` banner ever appears. Window attribution, not

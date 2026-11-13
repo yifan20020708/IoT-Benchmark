@@ -311,7 +311,7 @@ result = {
         "http_size": int(http_size) if http_size and http_size.isdigit() else None,
         "reason": read("harness_reason"),
         "modes": {m: read("harness_mode_%s" % m, "not-run")
-                  for m in ("run", "debug", "analyze")},
+                  for m in ("run", "debug")},
     },
     "image": image,
     "container": container,
@@ -338,7 +338,7 @@ echo "===== agent-scan: $TASK_ID ====="
 echo "status    : $STATUS   (exit code follows this)"
 MODES_LINE=""
 [ -f "$OUTDIR/harness_modes" ] && MODES_LINE="   [$(cat "$OUTDIR/harness_modes")]"
-echo "harness   : $HARNESS  (independent re-boot, 3-mode matrix; ground truth)$MODES_LINE"
+echo "harness   : $HARNESS  (independent re-boot, run+debug matrix; ground truth)$MODES_LINE"
 echo "agent     : rc=$AGENT_RC duration=${AGENT_DUR}s timeout=${TIMEOUT}s"
 echo "patch     : $OUTDIR/agent-fixes.patch"
 echo "result    : $FWDIR/result.json"

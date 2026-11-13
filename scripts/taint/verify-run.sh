@@ -6,10 +6,9 @@
 #   <model-dir>     data/firmware/<vendor>/<model> (solved image present)
 #   <unit-name>     taint-work-output/functions/<unit> whose archive under
 #                   hunt-output/functions/<unit>/pocs/ is to be re-graded
-#   --mode          emulation mode for every poc boot (default: debug —
-#                   backdoor canary-file CI + crash-line BOF + liveness
-#                   all grade there; the analyze audit hook crashed on the
-#                   ARM engines, so debug-analyze is NOT a safe default)
+#   --mode          emulation mode for every poc boot (default debug:
+#                   THE grading boot — canary-file CI + crash-line BOF
+#                   + liveness all live there; treat it as fixed)
 #   --boot-timeout  seconds to wait for a freshly booted emulation to
 #                   answer HTTP before the poc run is recorded
 #                   boot_failed / rc3-inconclusive-equivalent (default 300)
