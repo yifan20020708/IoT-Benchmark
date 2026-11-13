@@ -63,14 +63,26 @@ deterministic oracle here and are not findings.
 
 ## Known engine defects (measured, not assumed)
 
-- **ARM kernels crash in `execve_hook` under `firmadyne.syscall=32`**
-  (`Unhandled fault: page domain fault`, init dies at ~0.8 s) — on W30E.
-  On AC15 the same audit mode boots but stalls (svc execve never
-  recorded). Consequence: the **token CI channel and `analyze` /
-  `debug-analyze` boots are unusable on current ARM targets**; the
-  canary-file channel (mode-independent, via telnetd 31338) carries CI
-  grading instead. `verify-run.sh` defaults to `emu debug` for exactly
-  this reason; hunt-prompt.md documents the fallback decision rule.
+- **ARM kernels fault in `execve_hook` at the first user-space execve
+  after the root pivot** (`Unhandled fault: page domain fault (0x01b)`,
+  `PC is at execve_hook+0x194`, dereferencing a user argv pointer with
+  the domain unopened). On W30E that execve is init's own: the kernel
+  dies at ~0.8 s and debug-analyze never serves. On AC15 (kernel
+  4.4.298, fixed image) analyze boots and `[ANALYZE]` lines appear —
+  but ONLY for initrd-phase execves; in vendor rootfs every user execve
+  faults the hook (measured: 75 oopses in 5 min, zero execve lines after
+  pivot) and the fault lands ON the syscall path, so it can abort the
+  very injected command an analyze boot is trying to grade.
+  `debug-analyze` is not a workaround: debug.sh takes the same 0x01b
+  fault and the telnetd backdoor dies within ~2 min. Consequences: the
+  **token CI channel is structurally unusable on both ARM targets** —
+  boot-phase [ANALYZE] lines are NOT runtime liveness (an image-mode
+  gate counting them false-passes); CI grading is carried by the
+  canary-file channel (debug boot, telnetd 31338) — and a token-only CI
+  is invisible (rc=1) on debug boots by contract, which is why the
+  archive contract wants the canary form (`;a;$POC_MARKER;#`).
+  `verify-run.sh` defaults to `emu debug` for exactly this reason;
+  hunt-prompt.md documents the fallback decision rule.
 - Booting `:solved` twice in one container is a lie: FirmAE's reboot
   interception is an **in-place init restart** — kernel uptime continues,
   no second `Linux version` banner ever appears. Window attribution, not
@@ -150,5 +162,11 @@ hunt-output/_batch/<stamp>/  per-unit driver logs + batch summary.json
 
 Ground truth so far: AC15 vendor CVEs (BOF `SetIPMacBind`, CI
 `SetIPTVCfg`) graded rc=0 end-to-end by poc-run with zero false positives
-across the noise bed (smoke/flood/benign) — the grading contract is
-battle-tested; W30E hunt is live (426 units, 380 with ammunition+routes).
+across the noise bed (smoke/flood/benign) — re-confirmed on the
+2026-11-13 fixed image: debug matrix = BOF T, CI-canary T, benign n
+(token-CI rc=1 on debug boots is the documented channel gap, not a
+grading defect). W30E hunt is live (426 units) with two agent-mined,
+verify-replayed TRIGGERED hits: the libcommon `GetValue`
+unbounded-strncpy primitive has now crashed two different call sites
+(`formGetAcAdvanced`'s 64 B buffer via `ac.reboot.weekday`;
+`add_pptp_config`'s 256 B buffer via `wan<N>.pptp.*`).

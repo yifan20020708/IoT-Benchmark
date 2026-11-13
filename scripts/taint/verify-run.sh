@@ -174,9 +174,9 @@ for poc in "${POC_LIST[@]}"; do
     python3 - "$poc" "$RC" "$VERDICT" "$IDX" "$NOTE" "$RESULTS" <<'EOF'
 import json, sys
 poc, rc, verdict, idx, note, res = sys.argv[1:7]
-json.dump({"poc": poc, "rc": int(rc), "verdict": verdict,
-           "evidence": f"evidence/{idx}-{poc}/", "note": note or None},
-          open(res, "a"))
+with open(res, "a") as f:
+    f.write(json.dumps({"poc": poc, "rc": int(rc), "verdict": verdict,
+                        "evidence": f"evidence/{idx}-{poc}/", "note": note or None}) + "\n")
 EOF
     echo "[verify-run]   $poc -> rc=$RC $VERDICT ${NOTE:+($NOTE)}"
 done
