@@ -73,6 +73,41 @@ STAMP=$(date -u +%Y%m%d-%H%M%S)
 BLOGDIR="$MODEL/hunt-output/_batch/$STAMP"
 mkdir -p "$BLOGDIR"
 
+# ---- live state for hunt-batch-monitor.sh (same pattern as mapper-batch) ----
+mkdir -p /tmp/agent-scan-monitor
+MSLUG=$(printf '%s' "$MODEL" | sed 's|^/||; s|/|-|g; s|[^a-zA-Z0-9._-]|-|g')
+STATEF="/tmp/agent-scan-monitor/hunt-$MSLUG.json"
+state() {
+    python3 - "$STATEF" "$@" <<'PYEOF'
+import json, sys, os, time
+path, verb = sys.argv[1], sys.argv[2]
+def save(d):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f: json.dump(d, f)
+    os.replace(tmp, path)          # atomic: readers never see a torn file
+try:
+    d = json.load(open(path))
+except Exception:
+    d = None
+if verb == "init":
+    d = {"model": sys.argv[3], "jobs": int(sys.argv[4]), "timeout": int(sys.argv[5]),
+         "started_at": time.time(), "finished_at": None,
+         "total": int(sys.argv[6]), "queue": json.loads(sys.argv[7]),
+         "running": []}
+elif d is None:
+    sys.exit(0)
+elif verb == "stage":            # unit, stage (hunt|verify|None=finished)
+    u, stage = sys.argv[3], sys.argv[4]
+    d["queue"] = [q for q in d.get("queue", []) if q != u]
+    d["running"] = [r for r in d.get("running", []) if r["unit"] != u]
+    if stage:
+        d["running"].append({"unit": u, "stage": stage, "started_at": time.time()})
+elif verb == "finish":
+    d["finished_at"] = time.time()
+save(d)
+PYEOF
+}
+
 hunt_ok() {  # previous hunt succeeded (skip marker)
     local u="$1" f="$MODEL/hunt-output/functions/$u/run/result.json"
     [ -f "$f" ] && [ "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("status",""))' "$f" 2>/dev/null)" = "success" ]
@@ -89,39 +124,55 @@ run_unit() {   # full pipeline for ONE unit; both stages always attempted
     {
         echo "[batch] === $u ==="
         if ! hunt_ok "$u" || [ -n "$REHUNT" ]; then
+            exec 7>"$STATEF.lock"; flock 7; state stage "$u" hunt; exec 7>&-
             "$SCRIPTS/hunt-run.sh" --timeout "$TIMEOUT" "$MODEL" "$u" || RC=$?
             echo "[batch] hunt rc=$RC"
         else
             echo "[batch] hunt skipped (run/result.json success; --rehunt to override)"
         fi
+        exec 7>"$STATEF.lock"; flock 7; state stage "$u" verify; exec 7>&-
         RC=0
         "$SCRIPTS/verify-run.sh" --mode "$VMODE" "$MODEL" "$u" || RC=$?
         echo "[batch] verify rc=$RC"
+        exec 7>"$STATEF.lock"; flock 7; state stage "$u" ""; exec 7>&-
     } >"$log" 2>&1
 }
 
 # ---- schedule ---------------------------------------------------------------
-N_TOTAL=${#LIST[@]}; N_QUEUED=0; N_SKIPPED=0
+# pass 1: decide scope (skips are final; everything else is the queue)
+N_SKIPPED=0
+SCHED=()
 for u in "${LIST[@]}"; do
     if verify_done "$u" && [ -z "$REVERIFY" ]; then
         echo "[batch] skip $u (verify/result.json exists; --reverify to override)"
         N_SKIPPED=$((N_SKIPPED + 1))
         continue
     fi
-    if [ -n "$DRYRUN" ]; then
-        printf '[dry] %-55s hunt:%s verify:%s\n' "$u" \
-            "$(hunt_ok "$u" && echo skip || echo RUN)" RUN
-        N_QUEUED=$((N_QUEUED + 1))
-        continue
-    fi
+    SCHED+=("$u")
+done
+if [ -n "$DRYRUN" ]; then
+    for u in "${SCHED[@]}"; do
+        printf '[dry] %-55s hunt:%s verify:RUN\n' "$u" \
+            "$(hunt_ok "$u" && echo skip || echo RUN)"
+    done
+    echo "[dry] queued=${#SCHED[@]} skipped=$N_SKIPPED total=${#LIST[@]}"
+    exit 0
+fi
+
+# pass 2: publish live state (monitor input), then fill the pool
+QUEUE_JSON=$(printf '%s\n' "${SCHED[@]}" \
+    | python3 -c 'import json,sys;print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
+exec 7>"$STATEF.lock"; flock 7
+state init "$MODEL" "$PARALLEL" "$TIMEOUT" "${#SCHED[@]}" "$QUEUE_JSON"
+exec 7>&-
+echo "[batch] queued=${#SCHED[@]} skipped=$N_SKIPPED — running..."
+for u in "${SCHED[@]}"; do
     while [ "$(jobs -rp | wc -l)" -ge "$PARALLEL" ]; do sleep 5; done
     run_unit "$u" &
-    N_QUEUED=$((N_QUEUED + 1))
 done
-[ -n "$DRYRUN" ] && { echo "[dry] queued=$N_QUEUED skipped=$N_SKIPPED total=$N_TOTAL"; exit 0; }
 
-echo "[batch] queued=$N_QUEUED skipped=$N_SKIPPED — running..."
 wait
+exec 7>"$STATEF.lock"; flock 7; state finish; exec 7>&-
 
 # ---- summary ----------------------------------------------------------------
 python3 - "$MODEL" "$BLOGDIR" <<'EOF'
