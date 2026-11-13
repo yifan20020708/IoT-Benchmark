@@ -25,6 +25,11 @@ this script. Same evidence classes a human judge would use, no judgment.
                 │        + evidence/, run/{agent.log,result.json,transcripts}
    verify-run.sh ─▶        verify/{result.json,evidence/}
    (deterministic: ONE FRESH CONTAINER+BOOT PER POC, poc-run replay only)
+                │ hit (rc0/rc2)
+   report-agent.sh ─▶      data/round/<vendor>/<model>/<poc-stem>-<graded-ts>/
+   (write-once vault: poc + evidence + meta.json, then a STATIC-only agent —
+    no boot, no re-verification — writes REPORT.md + AUDIT.json; the archiver
+    extends AUDIT.json with deterministic finality + derived 3-tier confidence)
                 │
    hunt-batch.sh  schedules the whole unit list; hunt-batch-monitor.sh watches
 ```
@@ -90,7 +95,9 @@ deterministic oracle here and are not findings.
 | `poc-run.sh` | **The deterministic grader.** Contract, channels and protocol above. Never baked into images — `docker cp`'d at derive time so every grading replays the CURRENT script. |
 | `hunt-prompt.md` | The Hunter's mission brief: unit ammunition description, the two data-dependency lenses (call graph / storage channel) each with a real mined W30E case, the three graded classes, rc semantics, archive contract. Describes the task; does not constrain technique. |
 | `hunt-run.sh` | One unit, one derived agent container: stage `/work/hunt` (unit jsons + auth/dispatch/boundary) + `/work/taint` (call-site-dump, surface, notes) + CURRENT `poc-run`/`emu` + decompiled-rootfs host fallback → in-container agent under watchdog → harvest archive/evidence/transcripts → driver-written `run/result.json`. |
-| `verify-run.sh` | The LLM-free scoring pass per unit: one fresh container per archived poc, `emu debug`, serving-wait, `poc-run --out-root` → `verify/result.json` with rc/verdict/evidence per poc. Archive files outside the `.py`/`.c` contract are listed as violations, never executed. |
+| `verify-run.sh` | The LLM-free scoring pass per unit: one fresh container+boot per archived poc, `emu debug`, serving-wait, `poc-run --out-root` → `verify/result.json` with rc/verdict/evidence per poc. POC JOBS RUN IN PARALLEL (`--parallel N`, default 4 — dedicated container names `verify-<unit>-<idx>`, per-job jsonl parts merged in index order; each TCG boot ~1 core). Archive files outside the `.py`/`.c` contract are listed as violations, never executed. Every hit (rc0/rc2) additionally lands in the round vault: snapshot inline (fast, deterministic — yields the `round` path), report agent DETACHED (grading never waits on an LLM); `--no-report` opts out. |
+| `report-agent.sh` | Round vault archiver + report writer for ONE graded hit: snapshots poc/evidence/meta.json (meta carries the deterministic `finality` read from the grader's report.json) to `data/round/<vendor>/<model>/<poc-stem>-<graded-ts>/` (append-only — the grading timestamp makes names collision-proof, a poc already vaulted by hash is REUSED not duplicated, and REPORT.md+AUDIT.json are never overwritten; `index.json` ledger rebuilt per pass) and launches a host-side STATIC-only agent (cwd = vault entry, watchdog'd, `--effort high` default) that writes the English `REPORT.md` plus the machine-readable `AUDIT.json` judgment ledger (attribution / threat_model / artifact_check / novelty — binary 0-DAY/N-DAY by version×route×parameter triple; no demonstrated N-Day match IS 0-day; cited CVEs flagged `citation_verified:false` for driver confirmation). The script then extends AUDIT.json with the overall 3-tier `confidence` (high = CLOSED+TOKEN+pure remote+no artifact doubt; low = guest-side/non-remote/artifact doubt/CHECK; else medium) — DERIVED from the dimensions, never agent-asserted. `--snapshot-only`/`--render-only` exercise the vault without spending an agent. |
+| `report-prompt.md` | The report agent's brief: eleven-section vendor-disclosure structure (path source→sink with decompiled citations, proof mechanics + the four-dimension evidence audit, evidence index into `evidence/`, impact incl. shared-primitive grep across the root, severity rationale) with the static-only hard rules and the AUDIT.json schema — no HTML-comment footers anywhere. |
 | `hunt-batch.sh` | Schedules unit pipelines (`hunt-run → verify-run`, one worker pair per unit, `--parallel N`, resumable per stage), writes the live state file, final `summary.json`. |
 | `hunt-batch-monitor.sh` | Live dashboard: scoreboard in POCs (archived/graded/hits + T-S-n-I-P-B histogram), never a success rate; budget gauge per hunting worker. |
 
@@ -149,13 +156,3 @@ hunt-output/functions/<unit>/
 hunt-output/_batch/<stamp>/  per-unit driver logs + batch summary.json
 ```
 
-Ground truth so far: AC15 vendor CVEs (BOF `SetIPMacBind`, CI
-`SetIPTVCfg`) graded rc=0 end-to-end by poc-run with zero false positives
-across the noise bed (smoke/flood/benign) — re-confirmed on the
-2026-11-13 fixed image: debug matrix = BOF T, CI-canary T, benign n
-(token-CI rc=1 on debug boots is the documented channel gap, not a
-grading defect). W30E hunt is live (426 units) with two agent-mined,
-verify-replayed TRIGGERED hits: the libcommon `GetValue`
-unbounded-strncpy primitive has now crashed two different call sites
-(`formGetAcAdvanced`'s 64 B buffer via `ac.reboot.weekday`;
-`add_pptp_config`'s 256 B buffer via `wan<N>.pptp.*`).
