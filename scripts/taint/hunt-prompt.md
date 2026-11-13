@@ -74,6 +74,15 @@ can be walked into:
    where a long value damages the process. A NEW fatal-signal line
    appears on the serial: `sending SIGSEGV to <comm>` (MIPS) or the
    lowercase `potentially unexpected fatal signal 11` (ARM).
+   Optional craft, never a requirement: when your smashed bytes are
+   what the oops prints (saved LR popped into PC, callee-saved
+   registers), fill the overflowed region with repeating `$POC_MARKER`
+   instead of `'A'*n` — same length, same offsets, just a self-
+   identifying pattern. The crash then carries THIS run's identity in
+   its registers (byte-grade attribution) instead of relying on the
+   one-poc-per-fresh-boot window protocol. If the corrupted value never
+   lands in a dumped register, WINDOW is the honest ceiling — do not
+   contort a working payload to chase the pattern.
 3. **DoS** — data hangs or kills the service with no crash line and no
    reboot: the port answered before the poc and does not answer after.
 
