@@ -164,9 +164,19 @@ for u in units:                                 # containers with no state file
 run.sort(key=lambda r: -r[2])
 
 # ---- scoreboard ----------------------------------------------------------------
-graded_units = [u for u in units if uinfo[u]["verify"] and u not in running_units]
+# scope: when a batch is live, the batch's own worklist is the denominator
+# (st["total"], graded = its units with a fresh verify/result.json); without
+# batch state we fall back to the full functions/ tree
+if batch_fresh:
+    b_total = st.get("total", n)
+    b_started = st.get("started_at", 0)
+    graded_units = [u for u in units if uinfo[u]["verify"]
+                    and uinfo[u]["v_mtime"] >= b_started and u not in running_units]
+else:
+    b_total = n
+    graded_units = [u for u in units if uinfo[u]["verify"] and u not in running_units]
 running_now  = [u for u in units if u in running_units]
-pending      = n - len(graded_units) - len(running_now)
+pending      = b_total - len(graded_units) - len(running_now)
 tot_pocs     = sum(info["pocs"] for info in uinfo.values())
 all_verdicts = [v for info in uinfo.values() for v in info["graded"]]
 hits         = sum(1 for v in all_verdicts if v in ("TRIGGERED", "service_down"))
@@ -182,7 +192,8 @@ def box(rows):
 # ---- 1 · header ---------------------------------------------------------------
 model_name = os.path.basename(MODEL)
 rows = [f"{B}agent-scan{R} {D}·{R} {D}taint hunt{R} · {model_name}   {D}{hms(now)}{R}",
-        f"{D}{n} units{R} {D}in scope{R}"]
+        (f"{D}{n} units{R} {D}in scope{R}" if not batch_fresh
+         else f"{D}{n} units{R} {D}in tree{R} {D}·{R} {B}{b_total}{R} {D}in this batch{R}")]
 if batch_fresh:
     q = len(st.get("queue", []))
     fin = st.get("finished_at")
@@ -207,7 +218,7 @@ if total:
     scaled[i] += BARW - sum(scaled)
 bar = "".join(col + "█" * s + R for (k, col), s in zip(segs, scaled) if s > 0) \
       or D2 + "░" * BARW + R
-annot = f"{B}{len(graded_units)}/{n}{R} {D}graded{R}"
+annot = f"{B}{len(graded_units)}/{b_total}{R} {D}graded{R}"
 if running_now:
     annot += f" {D}·{R} {GOLD}{len(running_now)} running{R}"
 hist_str = " ".join(f"{col}{v}{D}{k}{R}" for k, v, col in
