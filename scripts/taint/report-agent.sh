@@ -43,7 +43,12 @@
 #                   policy; audited via checked_at + the queries list)
 #   AUDIT.json      the JUDGMENT ledger — the AGENT writes it directly
 #                   (schema in report-prompt.md: attribution /
-#                   threat_model / artifact_check / novelty; the
+#                   threat_model / artifact_check / novelty / flow;
+#                   flow.channel = direct (attacker bytes reach the
+#                   corrupting copy within ONE request, purely along
+#                   the call graph) | cross (bytes are FIRST stored
+#                   — config/flash/file/IPC — and the corrupting copy
+#                   happens on a LATER request's read-back path); the
 #                   REPORT.md HTML-comment footers are GONE), and the
 #                   script EXTENDS the same file with two things the
 #                   agent may NOT assert: `finality` (read straight
@@ -166,6 +171,7 @@ if os.path.exists(ap):
         aud = None
 if not isinstance(aud, dict):
     m["novelty"] = "missing"; m["confidence"] = None; m["attribution"] = None
+    m["flow"] = "unknown"
     json.dump(m, open(mp, "w"), indent=2, ensure_ascii=False)
     print("[report-agent] WARN: REPORT.md written but AUDIT.json "
           "missing/invalid — no judgments merged (next pass retries)", file=sys.stderr)
@@ -175,6 +181,10 @@ def sub(name):
     d = aud.get(name)
     return d if isinstance(d, dict) else {}
 attr, tm, art, nov = sub("attribution"), sub("threat_model"), sub("artifact_check"), sub("novelty")
+flow = sub("flow")
+# flow.channel is the agent's data-path judgment; the script NORMALIZES it
+# (anything not exactly direct|cross becomes unknown — never silently kept)
+chan = flow.get("channel") if flow.get("channel") in ("direct", "cross") else "unknown"
 
 def finality_of():
     fin = m.get("finality")
@@ -215,6 +225,10 @@ else:
 
 if nov.get("cve"):
     nov["citation_verified"] = False   # until a driver search confirms the ID
+if isinstance(aud.get("flow"), dict):
+    aud["flow"]["channel"] = chan      # normalized stamp
+else:
+    aud["flow"] = {"channel": chan, "evidence": "agent wrote no flow block"}
 aud["finality"] = fin
 aud["confidence"] = {"level": conf,
                      "derived_from": "finality(script) x attribution x threat_model x artifact_check"}
@@ -225,11 +239,13 @@ m["novelty"] = nov.get("status") or "missing"
 m["cve"] = nov.get("cve")
 m["confidence"] = conf
 m["attribution"] = attr.get("grade")
+m["flow"] = chan
 m["finality"] = fin
 m["cve_needs_verification"] = bool(nov.get("cve"))   # agent-cited ID: driver must confirm it
 json.dump(m, open(mp, "w"), indent=2, ensure_ascii=False)
 print(f"[report-agent] audit merged: confidence={conf} novelty={m['novelty']} "
       f"cve={m['cve']} finality={fin.get('grade')} attribution={attr.get('grade')} "
+      f"flow={chan} "
       f"remote={tm.get('remote_http_only')} artifact={art.get('emulation_artifact')}",
       file=sys.stderr)
 PYEOF
@@ -258,6 +274,7 @@ for mp in sorted(glob.glob(os.path.join(vault, "*", "meta.json"))):
         "novelty": m.get("novelty"), "cve": m.get("cve"),
         "cve_unverified": bool(m.get("cve_needs_verification")),
         "confidence": m.get("confidence"), "attribution": m.get("attribution"),
+        "flow": m.get("flow"),
         "report": m.get("report"), "graded_at": m.get("graded_at"),
         "audit": os.path.exists(os.path.join(os.path.dirname(mp), "AUDIT.json")),
         "audit_driver": os.path.exists(os.path.join(os.path.dirname(mp), "AUDIT.driver.json")),
@@ -328,7 +345,7 @@ json.dump({
     "source": {"model_dir": model, "hunt_poc": os.path.join(model, "hunt-output/functions", unit, "pocs", pocname),
                "evidence_origin": evdir, "report_json": rjson},
     "report": "pending", "novelty": None, "cve": None,
-    "confidence": None, "attribution": None,
+    "confidence": None, "attribution": None, "flow": None,
 }, open(meta_p, "w"), indent=2, ensure_ascii=False)
 print(f"[report-agent] meta: {'+'.join(cls) or 'unknown'} marker={v.get('marker','')}", file=sys.stderr)
 EOF
@@ -356,6 +373,7 @@ for mp in sorted(glob.glob(os.path.join(vault, "*", "meta.json"))):
         "novelty": m.get("novelty"), "cve": m.get("cve"),
         "cve_unverified": bool(m.get("cve_needs_verification")),
         "confidence": m.get("confidence"), "attribution": m.get("attribution"),
+        "flow": m.get("flow"),
         "report": m.get("report"), "graded_at": m.get("graded_at"),
         "audit": os.path.exists(os.path.join(os.path.dirname(mp), "AUDIT.json")),
         "audit_driver": os.path.exists(os.path.join(os.path.dirname(mp), "AUDIT.driver.json")),

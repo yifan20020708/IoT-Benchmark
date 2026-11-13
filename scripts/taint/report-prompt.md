@@ -170,6 +170,10 @@ rename the keys):
         "similar": "one-line resemblance, or null",
         "checked_at": "YYYY-MM-DD",
         "queries": ["every search you ran, failed and empty ones included"]
+      },
+      "flow": {
+        "channel": "direct" | "cross",
+        "evidence": "1-2 sentences: direct = attacker bytes reach the corrupting copy within the ONE graded request, purely along the call graph; cross = bytes are FIRST persisted (config key / flash / file / IPC state) by one request and the corrupting copy runs on a LATER request's read-back path (the write and the read-back together are the graded request)"
       }
     }
 
@@ -185,6 +189,14 @@ Rules:
   grading, not a demotion to hide). Grading each dimension honestly is
   therefore mandatory: inflating one inflates a confidence you do not
   own.
+- `flow.channel` is decided from the STATIC data path you documented in
+  §2, cross-checked against the crash location in the evidence: if the
+  corrupting copy reads a PERSISTED value (GetValue-style read-back of
+  something a previous request stored), it is `cross` even when both
+  requests are in one poc; one request, parameter straight into the
+  smashed buffer, is `direct`. The archiver normalizes anything that is
+  not exactly one of the two words to `unknown`. This dimension does NOT
+  feed confidence — it describes the data path, nothing more.
 - If `REPORT.md` already exists and is accurate, keep it and write the
   matching `AUDIT.json`.
 
