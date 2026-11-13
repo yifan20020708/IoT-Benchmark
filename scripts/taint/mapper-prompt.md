@@ -190,6 +190,10 @@ contract violation even when `callsite.ret_site` holds the value).
                 "handler_binary": "rootfs/bin/httpd",
                 "evidence": "…" } ] }
 ```
+Every route names a concrete handler function. An endpoint you cannot
+attribute to any handler function (login pages, web-core built-ins, static
+paths) is not a dispatch route — its reachability belongs in auth.json's
+endpoint lists, never here as a route with a `null` handler.
 
 **auth.json**
 ```json
