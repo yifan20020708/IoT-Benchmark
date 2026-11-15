@@ -227,6 +227,19 @@ button,input{font:inherit;color:inherit}
 /* middle scroll zone: ONLY this band moves; header and policy stay pinned */
 .railmid{flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:24px}
 .rings{display:flex;gap:16px;border-top:1px solid var(--line);padding-top:20px}
+/* direct cross-counts under the two rings (tier 1 only): the one-dim
+   rings can't express CONFIRMED∩0-DAY, so say it as a number */
+.xstats{display:grid;grid-template-columns:1fr 1fr;gap:10px;border-top:1px solid var(--line);padding-top:14px}
+.xstats .xs{display:flex;flex-direction:column;gap:2px;min-width:0}
+.xstats b{font:19px/1.25 var(--mono);font-weight:700}
+.xstats label{font-size:8px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.xstats .xcs{display:flex;flex-direction:column;gap:4px;margin-top:8px}
+.xstats .xc{font:8.5px/1 var(--mono);letter-spacing:.05em;padding:4px 7px 5px;border-radius:6px;white-space:nowrap;display:flex;align-items:center;justify-content:space-between;gap:4px;color:var(--mut)}
+.xstats .xc b{font-weight:700}
+.xstats .xc-ci{color:var(--sky);background:color-mix(in srgb,var(--sky) 14%,transparent)}
+.xstats .xc-bof{color:var(--violet);background:color-mix(in srgb,var(--violet) 14%,transparent)}
+.xstats .xc-dos{color:var(--pend);background:color-mix(in srgb,var(--pend) 16%,transparent)}
+.xstats .xc.z{opacity:.4}
 .ring{flex:1;display:flex;flex-direction:column;align-items:center;gap:10px;min-width:0}
 .ring .rt{font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--faint)}
 .rd{position:relative;width:96px;height:96px}
@@ -421,6 +434,7 @@ pre.qs{margin:0;padding:12px 14px;background:var(--bg);border:1px solid var(--li
         <div class="rd"><div id="dTru"></div><div class="dc" id="cTru"></div></div>
         <div class="lg" id="lTru"></div></div>
     </div>
+    <div class="xstats t1only" id="xstats"></div>
     </div>
     <div class="railfoot">
       <b>CONFIRMED</b> = the grader proved it and attribution holds
@@ -582,6 +596,14 @@ function stat(list){
   $("#cNov").innerHTML = `<div><b>${t1}</b><i>shown</i></div>`;
   const aud = cnt(h=>h.truth!=="PENDING");
   $("#cTru").innerHTML = `<div><b>${aud}</b><i>audited</i></div>`;
+  const x0 = cnt(h=>h.truth==="CONFIRMED"&&h.novelty==="0-DAY");
+  const xn = cnt(h=>h.truth==="CONFIRMED"&&h.novelty==="N-DAY");
+  const xcs = pred => ["CI","BOF","DoS"].map(c=>{
+    const n = cnt(h=>h.truth==="CONFIRMED"&&pred(h)&&clsShort(h.class)===c);
+    return `<span class="xc xc-${c.toLowerCase()}${n?"":" z"}" title="${c}: ${n} confirmed">${c} <b>${n}</b></span>`;}).join("");
+  $("#xstats").innerHTML =
+    `<div class="xs"><b style="color:var(--accent)">${x0}</b><label title="CONFIRMED entries whose novelty is 0-DAY">confirmed · 0-day</label><div class="xcs">${xcs(h=>h.novelty==="0-DAY")}</div></div>`+
+    `<div class="xs"><b style="color:var(--sky)">${xn}</b><label title="CONFIRMED entries whose novelty is N-DAY">confirmed · n-day</label><div class="xcs">${xcs(h=>h.novelty==="N-DAY")}</div></div>`;
 }
 
 /* ── filtering ────────────────────────────────────────── */
