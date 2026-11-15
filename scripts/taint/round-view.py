@@ -14,16 +14,20 @@ What it shows
       ATTRIBUTION chain, never the finding — the dashboard therefore
       collapses it to: high|medium -> CONFIRMED (real), low -> REJECTED,
       entries whose audit has not landed -> PENDING.
-  (3) Grouped vendor -> model, cards per hit with class/rc/marker/
-      graded-ts; clicking a card opens the full audit (four dimensions +
-      deterministic finality + novelty queries) and the rendered
-      REPORT.md, straight from the vault files embedded in the page.
+  (3) TWO TIERS: fleet overview = one card per model (status ring, total
+      hits, 0-DAY/N-DAY/confirmed/rejected, class histogram) with the
+      left rail counting vendors; a model card drills into the per-hit
+      ledger (cards with class/rc/marker/graded-ts, filtered by
+      novelty/status/attribution/class), and a card opens the full audit
+      (dimensions + deterministic finality + novelty queries) plus the
+      rendered REPORT.md, straight from vault files embedded in the
+      page. Routing on #/v/<vendor>/m/<model>.
 
 Default output: <root>/dashboard.html (a derived artifact — like
 index.json it is rebuilt wholesale and never read by other scripts).
 Exit 0; last stdout line = the HTML path.
 """
-import argparse, datetime, glob, hashlib, html, json, os, sys
+import argparse, datetime, glob, hashlib, html, json, os, re, sys
 
 TRUTH = {"high": "CONFIRMED", "medium": "CONFIRMED", "low": "REJECTED"}
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +36,20 @@ REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 def sub(dct, key):
     v = dct.get(key) if isinstance(dct, dict) else None
     return v if isinstance(v, dict) else {}
+
+CVE_ID_RE = re.compile(r"\b((?:CVE|CNVD|CNNVD|AVD)-\d{4,}-\d{2,7})\b", re.I)
+
+def clean_cve(s):
+    """The chip shows the identifier, never the audit prose: an agent that
+    stuffed caveats into novelty.cve still yields 'CVE-2020-27251' (first
+    ID wins); a value with no ID at all is truncated, not paragraph'd."""
+    s = "" if s is None else str(s).strip()
+    if not s:
+        return None
+    mm = CVE_ID_RE.search(s)
+    if mm:
+        return mm.group(1).upper()
+    return s if len(s) <= 24 else s[:23] + "…"
 
 def load_entry(root, vendor, model, ed):
     try:
@@ -82,7 +100,7 @@ def load_entry(root, vendor, model, ed):
         "mode": m.get("mode"), "graded_at": m.get("graded_at"),
         "report_state": m.get("report"),
         "conf": conf, "truth": truth,
-        "novelty": status, "cve": nov.get("cve") or m.get("cve"),
+        "novelty": status, "cve": clean_cve(nov.get("cve") or m.get("cve")),
         "cve_unverified": bool(m.get("cve_needs_verification")),
         "similar": nov.get("similar"), "checked_at": nov.get("checked_at"),
         "queries": nov.get("queries") or [],
@@ -242,11 +260,46 @@ main{padding:0 30px;min-width:0;height:100vh;display:flex;flex-direction:column;
 .vhead{display:flex;align-items:baseline;gap:12px;margin:30px 0 4px;padding-bottom:10px;border-bottom:1px solid var(--line)}
 .vhead h2{margin:0;font-size:13px;font-weight:750;letter-spacing:.22em;text-transform:uppercase;color:var(--accent)}
 .vhead .vc{font:11px var(--mono);color:var(--faint)}
-.mblock{margin:20px 0 6px}
-.mblock .mh{display:flex;align-items:baseline;gap:12px;margin-bottom:14px}
-.mblock .mh h3{margin:0;font:13.5px var(--mono);font-weight:650;letter-spacing:.02em}
-.mblock .mh .ms{font:11px var(--mono);color:var(--faint)}
-.mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:14px}
+.mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:14px;padding-top:6px}
+
+/* ── two-tier desk: fleet (t1) → model ledger (t2) ─────── */
+body.t1 .t2only{display:none!important}
+body.t2 .t1only{display:none!important}
+.mbk{align-self:center;font:11.5px var(--mono);color:var(--mut);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:4px 11px;text-decoration:none;transition:border-color .14s,color .14s}
+.mbk:hover{color:var(--ink);border-color:var(--faint)}
+.mcgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;padding-top:6px}
+.mcard{display:flex;gap:24px;align-items:center;min-width:0;background:linear-gradient(165deg,var(--surface2),var(--surface));border:1px solid var(--line);border-radius:18px;padding:26px 28px;cursor:pointer;transition:transform .14s ease,border-color .14s,box-shadow .14s}
+.mcard:hover{transform:translateY(-3px);border-color:var(--faint);box-shadow:var(--shadow)}
+.mcring{width:118px;flex:none}
+.mcring .rd{width:118px;height:118px;flex:none}
+.mcring .dc b{font-size:27px}
+.mcring .dc i{margin-top:3px}
+.mcinfo{flex:1;min-width:0;display:flex;flex-direction:column;gap:10px}
+.mcov{display:flex;align-items:center;gap:10px}
+.vendo{font-size:10px;font-weight:750;letter-spacing:.22em;text-transform:uppercase;color:var(--accent)}
+.mcarrow{margin-left:auto;color:var(--faint);font-size:15px;transition:transform .14s,color .14s}
+.mcard:hover .mcarrow{color:var(--ink);transform:translate(2px,-2px)}
+.mcinfo h3{margin:-4px 0 0;font:17px var(--mono);font-weight:680;letter-spacing:-.01em;overflow-wrap:anywhere}
+.qstats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.qpair{display:grid;grid-template-columns:1fr 1fr;background:var(--bg);border:1px solid var(--hair);border-radius:10px;overflow:hidden}
+.qpair > div{padding:7px 11px 8px;display:flex;flex-direction:column;min-width:0}
+.qpair > div + div{border-left:1px solid var(--hair)}
+.qstats b{font:16px/1.3 var(--mono);font-weight:700}
+.qstats label{font-size:8.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--faint)}
+.mcc{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.mcc .chip{border:1px solid var(--line);border-radius:6px;padding:0 8px;font:10.5px var(--mono);color:var(--mut);letter-spacing:.06em}
+.mcc .chip b{color:var(--ink);font-weight:650}
+.mcc .chip.dim{opacity:.65}
+.mcc .mut{font:10.5px var(--mono);color:var(--faint);margin-left:auto}
+.qstats .zero{opacity:.4}
+.vlist{display:flex;flex-direction:column;gap:2px;margin-top:2px}
+.vrow{display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid transparent;border-radius:10px;cursor:pointer;color:var(--mut);transition:background .12s,color .12s,border-color .12s}
+.vrow:hover{background:var(--surface2);color:var(--ink)}
+.vrow.sel{background:var(--bg);border-color:var(--line);color:var(--ink)}
+.vrow .vname{font-size:12px;font-weight:680;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vrow .vbar{flex:1;height:3px;border-radius:2px;background:var(--surface2);overflow:hidden;min-width:14px;max-width:60px}
+.vrow .vbar i{display:block;height:100%;background:var(--accent);border-radius:2px}
+.vrow b{margin-left:auto;font:12px var(--mono);color:var(--ink)}
 
 .card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 17px 14px;cursor:pointer;min-width:0;transition:transform .12s ease,border-color .12s,box-shadow .12s;display:flex;flex-direction:column;gap:10px}
 .card:hover{transform:translateY(-2px);border-color:var(--faint);box-shadow:var(--shadow)}
@@ -330,27 +383,34 @@ pre.qs{margin:0;padding:12px 14px;background:var(--bg);border:1px solid var(--li
   #body{overflow:visible;flex:none}
   .mhead{position:static}
   .dmeta{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .mcgrid{grid-template-columns:1fr}
 }
 @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
 </style>
 </head>
-<body>
+<body class="t1">
 <div class="app">
   <aside class="rail">
     <div class="brand">
       <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.6"><path d="M12 2l8 4v6c0 5-3.5 8.4-8 10-4.5-1.6-8-5-8-10V6l8-4z"/><path d="M8.5 12.2l2.3 2.3 4.7-4.8" stroke="var(--ok)"/></svg>
       <div><div class="bn">Round Vault</div><div class="bs">agent-scan ledger</div></div>
     </div>
-    <div class="search">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.5-4.5"/></svg>
-      <input id="q" placeholder="poc · handler · marker · class…" autocomplete="off"><kbd>/</kbd>
+    <div class="t1only">
+      <div class="fl"><label>Vendors</label></div>
+      <div id="vlist" class="vlist"></div>
     </div>
-    <div>
-      <div class="fl"><label for="cs-nov">Novelty</label><div class="cs" id="cs-nov"></div></div>
-      <div class="fl"><label for="cs-truth">Status</label><div class="cs" id="cs-truth"></div></div>
-      <div class="fl"><label for="cs-attr">Attribution</label><div class="cs" id="cs-attr"></div></div>
-      <div class="fl"><label for="cs-vend">Vendor</label><div class="cs" id="cs-vend"></div></div>
-      <button id="reset">Clear filters</button>
+    <div class="t2only">
+      <div class="search">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.5-4.5"/></svg>
+        <input id="q" placeholder="poc · handler · marker · class…" autocomplete="off"><kbd>/</kbd>
+      </div>
+      <div style="margin-top:18px">
+        <div class="fl"><label for="cs-nov">Novelty</label><div class="cs" id="cs-nov"></div></div>
+        <div class="fl"><label for="cs-truth">Status</label><div class="cs" id="cs-truth"></div></div>
+        <div class="fl"><label for="cs-attr">Attribution</label><div class="cs" id="cs-attr"></div></div>
+        <div class="fl"><label for="cs-cls">Class</label><div class="cs" id="cs-cls"></div></div>
+        <button id="reset">Clear filters</button>
+      </div>
     </div>
     <div class="railmid">
     <div class="rings">
@@ -371,7 +431,8 @@ pre.qs{margin:0;padding:12px 14px;background:var(--bg);border:1px solid var(--li
 
   <main>
     <div class="mhead">
-      <h1>Vulnerability Ledger</h1>
+      <a class="mbk" id="mbk" href="#/" hidden>← All models</a>
+      <h1 id="mtitle">Fleet Overview</h1>
       <div class="mtools">
         <span id="cnt"></span>
         <span class="live" id="live" hidden><s></s>live</span>
@@ -414,7 +475,9 @@ let H = D0.hits, DATA_TS = D0.ts;
 const $ = s => document.querySelector(s);
 const $$ = (s,r=document) => [...r.querySelectorAll(s)];
 const esc = s => (s==null?"":String(s));
-let F = {nov:"", truth:"", attr:"", vend:"", q:""};
+let F = {nov:"", truth:"", attr:"", cls:"", q:""};
+let VS = "";                                      /* tier-1 vendor scope */
+let VIEW = {tier:1, vendor:"", model:""};
 
 /* ── custom listbox ───────────────────────────────────── */
 function listbox(hostId, optsIn, onSel){
@@ -448,22 +511,28 @@ function listbox(hostId, optsIn, onSel){
 }
 const SEL = {};
 function initFilters(){
-  SEL.nov = listbox("cs-nov", [{v:"",n:"All"},{v:"0-DAY",n:"0-DAY"},{v:"N-DAY",n:"N-DAY"}], v=>{F.nov=v;render();});
-  SEL.truth = listbox("cs-truth", [{v:"",n:"All"},{v:"CONFIRMED",n:"Confirmed"},{v:"REJECTED",n:"Rejected"}], v=>{F.truth=v;render();});
-  SEL.attr = listbox("cs-attr", [{v:"",n:"All"},{v:"TOKEN",n:"TOKEN"},{v:"WINDOW",n:"WINDOW"}], v=>{F.attr=v;render();});
-  SEL.vend = listbox("cs-vend", [{v:"",n:"All"}], v=>{F.vend=v;render();});
-  $("#q").oninput=e=>{F.q=e.target.value.toLowerCase();render();};
-  $("#reset").onclick=()=>{F={nov:"",truth:"",attr:"",vend:"",q:""};
-    SEL.nov.set("");SEL.truth.set("");SEL.attr.set("");SEL.vend.set("");$("#q").value="";render();};
+  SEL.nov = listbox("cs-nov", [{v:"",n:"All"},{v:"0-DAY",n:"0-DAY"},{v:"N-DAY",n:"N-DAY"}], v=>{F.nov=v;renderView();});
+  SEL.truth = listbox("cs-truth", [{v:"",n:"All"},{v:"CONFIRMED",n:"Confirmed"},{v:"REJECTED",n:"Rejected"}], v=>{F.truth=v;renderView();});
+  SEL.attr = listbox("cs-attr", [{v:"",n:"All"},{v:"TOKEN",n:"TOKEN"},{v:"WINDOW",n:"WINDOW"}], v=>{F.attr=v;renderView();});
+  SEL.cls = listbox("cs-cls", [{v:"",n:"All"}], v=>{F.cls=v;renderView();});
+  $("#q").oninput=e=>{F.q=e.target.value.toLowerCase();renderView();};
+  $("#reset").onclick=()=>{F={nov:"",truth:"",attr:"",cls:"",q:""};
+    SEL.nov.set("");SEL.truth.set("");SEL.attr.set("");SEL.cls.set("");$("#q").value="";renderView();};
   document.addEventListener("keydown",e=>{
-    if(e.key==="/"&&!/input|textarea|select/i.test(e.target.tagName)){e.preventDefault();$("#q").focus();}
-    if(e.key==="Escape")closeDrawer();
+    if(e.key==="/"&&VIEW.tier===2&&!/input|textarea|select/i.test(e.target.tagName)){e.preventDefault();$("#q").focus();}
+    if(e.key==="Escape"){
+      if($("#drawer").classList.contains("open"))closeDrawer();
+      else if(VIEW.tier===2)location.hash="#/";
+    }
   });
 }
-function fillVendors(){
-  const vs=[...new Set(H.map(h=>h.vendor))].sort();
-  SEL.vend.rebuild([{v:"",n:"All"}].concat(vs.map(v=>({v,n:v}))));
-  SEL.vend.set(F.vend);
+function fillCls(){
+  const order=["CI","BOF","DoS"];
+  const rank=c=>{const i=order.indexOf(c);return i<0?99:i;};
+  const cs=[...new Set(H.map(h=>clsShort(h.class)).filter(Boolean))];
+  cs.sort((a,b)=>rank(a)-rank(b)||a.localeCompare(b));
+  SEL.cls.rebuild([{v:"",n:"All"}].concat(cs.map(c=>({v:c,n:c}))));
+  SEL.cls.set(F.cls);
 }
 
 /* ── fine ratio rings ─────────────────────────────────── */
@@ -520,7 +589,7 @@ function pass(h){
   if(F.nov && h.novelty!==F.nov) return false;
   if(F.truth && h.truth!==F.truth) return false;
   if(F.attr && h.attr_grade!==F.attr) return false;
-  if(F.vend && h.vendor!==F.vend) return false;
+  if(F.cls && clsShort(h.class)!==F.cls) return false;
   if(F.q){const s=(h.poc+" "+h.unit+" "+h.model+" "+h.vendor+" "+h.marker+" "+(h.class||"")).toLowerCase();if(!s.includes(F.q))return false;}
   return true;
 }
@@ -551,26 +620,103 @@ function card(h,i){
     </div>
   </article>`;
 }
-function render(){
-  const vis = H.map((h,i)=>[h,i]).filter(([h])=>pass(h));
-  $("#cnt").textContent = vis.length+" / "+H.length+" in vault";
-  stat(vis.map(x=>x[0]));
-  if(!vis.length){$("#body").innerHTML=`<div class="empty">no entries match the filters</div>`;return;}
-  let out="";
-  const vendors=[...new Set(vis.map(([h])=>h.vendor))];
-  for(const v of vendors){
-    const inV=H.filter(x=>x.vendor===v).length;
-    out+=`<div class="vhead"><h2>${esc(v)}</h2><span class="vc">${inV} vaulted · ${vis.filter(x=>x[0].vendor===v).length} shown</span></div>`;
-    const models=[...new Set(vis.filter(([h])=>h.vendor===v).map(([h])=>h.model))];
-    for(const mo of models){
-      const mm=vis.filter(([h])=>h.model===mo&&h.vendor===v);
-      const conf=mm.filter(([h])=>h.truth==="CONFIRMED").length;
-      out+=`<div class="mblock"><div class="mh"><h3>${esc(mo)}</h3><span class="ms">${mm.length} hit${mm.length===1?"":"s"} · ${conf} confirmed</span></div><div class="mgrid">`;
-      out+=mm.map(([h,i])=>card(h,i)).join("");
-      out+=`</div></div>`;
-    }
+/* ── two-tier view: fleet (t1) → model ledger (t2) ────── */
+function models(list){
+  const m=new Map();
+  for(const h of list){
+    const k=h.vendor+" / "+h.model;
+    let e=m.get(k);
+    if(!e){e={vendor:h.vendor,model:h.model,n:0,d0:0,dn:0,np:0,conf:0,rej:0,pend:0,cls:{},units:new Set(),lo:"",hi:""};m.set(k,e);}
+    e.n++; e.units.add(h.unit||h.poc||e.n);
+    if(h.novelty==="0-DAY")e.d0++; else if(h.novelty==="N-DAY")e.dn++; else e.np++;
+    if(h.truth==="CONFIRMED")e.conf++; else if(h.truth==="REJECTED")e.rej++; else e.pend++;
+    const c=clsShort(h.class)||"—"; e.cls[c]=(e.cls[c]||0)+1;
+    const d=(h.graded_at||"").replace(/\D/g,"").slice(0,8);
+    if(d){if(!e.lo||d<e.lo)e.lo=d; if(!e.hi||d>e.hi)e.hi=d;}
   }
-  $("#body").innerHTML=out;
+  return [...m.values()].sort((a,b)=>b.n-a.n||a.vendor.localeCompare(b.vendor)||a.model.localeCompare(b.model));
+}
+function mcard(m,i){
+  const chips=[...["CI","BOF","DoS"].filter(c=>m.cls[c]).map(c=>`<span class="chip">${c} <b>${m.cls[c]}</b></span>`),
+    ...Object.entries(m.cls).filter(([c])=>!["CI","BOF","DoS"].includes(c)).map(([c,n])=>`<span class="chip dim">${esc(c)} <b>${n}</b></span>`)].join("");
+  const zero=v=>v?"":" zero";
+  return `<article class="mcard" tabindex="0" data-i="${i}">
+    <div class="mcring">
+      <div class="rd"><div class="donut"></div>
+        <div class="dc"><div><b>${m.n}</b><i>hits</i></div></div></div>
+    </div>
+    <div class="mcinfo">
+      <div class="mcov"><span class="vendo">${esc(m.vendor)}</span><span class="mcarrow" aria-hidden="true">↗</span></div>
+      <h3>${esc(m.model)}</h3>
+      <div class="qstats">
+        <div class="qpair">
+          <div${zero(m.d0)}><b class="day">${m.d0}</b><label title="novelty: 0-DAY">0-day</label></div>
+          <div${zero(m.dn)}><b class="nday">${m.dn}</b><label title="novelty: N-DAY">n-day</label></div>
+        </div>
+        <div class="qpair">
+          <div><b style="color:var(--ok)">${m.conf}</b><label title="audit status: CONFIRMED">confirmed</label></div>
+          <div><b style="color:var(--bad)">${m.rej}</b><label title="audit status: REJECTED">rejected</label></div>
+        </div>
+      </div>
+      <div class="mcc">${chips}<span class="mut">${m.units.size} handlers</span></div>
+    </div></article>`;
+}
+function parseHash(){
+  const m=(location.hash||"").match(/^#\/v\/([^/]+)\/m\/([^/]+)$/);
+  if(m){const v=decodeURIComponent(m[1]),mo=decodeURIComponent(m[2]);
+    if(H.some(h=>h.vendor===v&&h.model===mo))return{tier:2,vendor:v,model:mo};}
+  return{tier:1,vendor:"",model:""};
+}
+function renderView(){
+  VIEW=parseHash();
+  document.body.classList.toggle("t1",VIEW.tier===1);
+  document.body.classList.toggle("t2",VIEW.tier===2);
+  fillCls();
+  if(VIEW.tier===1)renderTier1();else renderTier2();
+}
+window.addEventListener("hashchange",renderView);
+function renderTier1(){
+  const scoped=VS?H.filter(h=>h.vendor===VS):H;
+  const ms=models(scoped);
+  $("#mbk").hidden=true;
+  $("#mtitle").textContent="Fleet Overview";
+  const nm=models(H).length,nv=new Set(H.map(h=>h.vendor)).size;
+  $("#cnt").textContent=`${H.length} entries · ${nm} model${nm===1?"":"s"} · ${nv} vendor${nv===1?"":"s"}`;
+  const vs=[...new Set(H.map(h=>h.vendor))].sort();
+  $("#vlist").innerHTML=
+    `<div class="vrow${VS?"":" sel"}" data-v=""><span class="vname">All vendors</span><span class="vbar"><i style="width:100%"></i></span><b>${H.length}</b></div>`+
+    vs.map(v=>{const n=H.filter(h=>h.vendor===v).length,p=H.length?Math.round(100*n/H.length):0;
+      return `<div class="vrow${VS===v?" sel":""}" data-v="${esc(v)}"><span class="vname">${esc(v)}</span><span class="vbar"><i style="width:${Math.max(p,4)}%"></i></span><b>${n}</b></div>`;}).join("");
+  $$("#vlist .vrow").forEach(r=>r.onclick=()=>{VS=r.dataset.v;renderView();});
+  stat(scoped);
+  let out="";
+  const byV=[];
+  ms.forEach((m,i)=>{let g=byV.find(x=>x.v===m.vendor);if(!g){g={v:m.vendor,list:[]};byV.push(g);}g.list.push([m,i]);});
+  for(const g of byV){
+    const gN=g.list.reduce((a,[m])=>a+m.n,0);
+    out+=`<div class="vhead"><h2>${esc(g.v)}</h2><span class="vc">${gN} hit${gN===1?"":"s"} · ${g.list.length} model${g.list.length===1?"":"s"}</span></div>`+
+         `<div class="mcgrid">${g.list.map(([m,i])=>mcard(m,i)).join("")}</div>`;
+  }
+  $("#body").innerHTML=out||`<div class="empty">the vault is empty — no graded hit has landed yet</div>`;
+  $$(".mcard").forEach(c=>{
+    const m=ms[+c.dataset.i];
+    const act=()=>{location.hash="#/v/"+encodeURIComponent(m.vendor)+"/m/"+encodeURIComponent(m.model);};
+    c.onclick=act;c.onkeydown=e=>{if(e.key==="Enter")act();};
+    donut(c.querySelector(".donut"),[
+      {k:"a",v:m.conf,color:"var(--ok)",name:"Confirmed"},
+      {k:"b",v:m.rej,color:"var(--bad)",name:"Rejected"},
+      {k:"c",v:m.pend,color:"var(--pend)",name:"Pending"}]);
+  });
+}
+function renderTier2(){
+  const ent=H.map((h,i)=>[h,i]).filter(([h])=>h.vendor===VIEW.vendor&&h.model===VIEW.model);
+  const vis=ent.filter(([h])=>pass(h));
+  $("#mbk").hidden=false;
+  $("#mtitle").textContent=VIEW.model;
+  $("#cnt").textContent=`${vis.length} / ${ent.length} hits shown`;
+  stat(vis.map(x=>x[0]));
+  if(!vis.length){$("#body").innerHTML=`<div class="empty">${ent.length?"no entries match the filters":"no hits for this model"}</div>`;return;}
+  $("#body").innerHTML=`<div class="mgrid">${vis.map(([h,i])=>card(h,i)).join("")}</div>`;
   $$(".card").forEach(c=>{
     c.onclick=()=>openDrawer(+c.dataset.i);
     c.onkeydown=e=>{if(e.key==="Enter")openDrawer(+c.dataset.i);};
@@ -635,7 +781,7 @@ if(location.protocol.startsWith("http")){
       if(j.ts !== DATA_TS){
         const grew = j.hits.length > H.length;
         H = j.hits; DATA_TS = j.ts;
-        fillVendors(); render();
+        renderView();
         const t=$("#toast");
         t.textContent = grew ? "vault updated — a new hit landed" : "vault data refreshed";
         t.classList.add("show"); setTimeout(()=>t.classList.remove("show"), 3400);
@@ -697,7 +843,7 @@ function md(src){
   return o;
 }
 
-initFilters(); fillVendors(); render();
+initFilters(); renderView();
 </script>
 </body>
 </html>
