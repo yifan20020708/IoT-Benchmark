@@ -117,6 +117,11 @@ root shell (`/firmadyne/sh`), and /opt/FirmAE-pro/binaries/ holds a
 matching gdb, gdbserver and busybox for every architecture — push the
 gdbserver through that shell and you can breakpoint the live daemon
 instead of guessing what its code does with your bytes.
+
+But: guest doors are a microscope, not a trigger. Attack bytes must
+arrive and fire over the network itself — a poc that leans on the
+backdoor to store or trigger is real yet booked guest-side, and demoted
+in the ledger.
 ```
 
 Every fresh boot requires re-running `auth.json`'s acquisition steps
