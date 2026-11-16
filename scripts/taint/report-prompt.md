@@ -24,6 +24,12 @@ statically.
   judgment ledger — schema at the end). Do not modify `poc.*`,
   `evidence/`, or `meta.json`. There are NO HTML-comment footers in
   REPORT.md — every machine-readable judgment goes in `AUDIT.json`.
+- Do NOT spawn subagents or background tasks (no Task agents, no
+  `run_in_background`, no `&`-detached helper sessions). This is a
+  one-shot print session: a background task still running when you end
+  your turn is force-stopped and its result is LOST — a run did exactly
+  that and returned with both deliverables unwritten. Do all decompile
+  tracing and web lookups inline, then write both files before ending.
 
 ## The graded hit
 
