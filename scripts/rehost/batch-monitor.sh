@@ -10,7 +10,12 @@
 # Everything shown is derived from REAL state, nothing is cached or faked:
 #   running  = `docker ps` task-* containers (works for agent-run.sh direct
 #              runs AND batch-run.sh; phase emu/agent from a host /proc scan:
-#              qemu-system pid -> cgroup -> container name)
+#              qemu-system pid -> cgroup -> container name) PLUS the host
+#              agent-run.sh workers whose container does not exist YET —
+#              their descendant process tree names the prep phase (stage =
+#              firmware copies/extraction, build = docker build of the task
+#              image, run = docker run issued, pre = idle between steps),
+#              so the box shows real work whenever batch slots are busy
 #   results  = each task folder's result.json (status, duration, promoted)
 #   batch    = batch-run.sh's state file, if present, adds queue/timeout/
 #              ETA context on top
@@ -150,7 +155,69 @@ if ws is not None:
         if tid in tasks.values():
             run.append((tid, now - created, "emu" if f"task-{tid}" in emu_cts else "agent"))
             running_ids.add(tid)
-    run.sort(key=lambda r: -r[1])
+
+# ---- host agent-run.sh workers whose container is not up yet ---------------
+def prep_workers(seen):
+    kids, args_of, start_of = {}, {}, {}
+    try:
+        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        return {}
+    for p in pids:
+        try:
+            f = open(f"/proc/{p}/stat").read().rsplit(") ", 1)[1].split()
+            pp, start = int(f[1]), int(f[19])
+            a = [x.decode(errors="ignore")
+                 for x in open(f"/proc/{p}/cmdline", "rb").read().split(b"\0") if x]
+        except (OSError, IndexError, ValueError):
+            continue
+        kids.setdefault(pp, []).append(int(p))
+        args_of[p], start_of[p] = a, start
+    btime = 0
+    try:
+        for l in open("/proc/stat"):
+            if l.startswith("btime"):
+                btime = int(l.split()[1]); break
+    except OSError:
+        pass
+    clk = os.sysconf("SC_CLK_TCK")
+    tset = set(tasks.values())
+    out = {}
+    for p, a in args_of.items():
+        if not any(x.endswith("agent-run.sh") for x in a[:3]):
+            continue
+        d = next((x for x in reversed(a) if x.startswith("/")
+                  and os.path.isfile(os.path.join(x, "task.json"))), None)
+        if d is None or not (d.rstrip("/") + "/").startswith(ROOTDIR + "/"):
+            continue
+        parts = d.rstrip("/").split("/")
+        tid = re.sub(r"[^a-z0-9._-]", "-", f"{parts[-2]}__{parts[-1]}".lower())
+        if tid in seen or tid not in tset:
+            continue
+        stack, desc = [int(p)], set()
+        while stack:
+            q = stack.pop()
+            for c in kids.get(q, []):
+                if c not in desc:
+                    desc.add(c); stack.append(c)
+        j = [" ".join(args_of.get(str(c), ())) for c in desc]
+        if any("docker build" in x for x in j):
+            ph = "build"
+        elif any("docker exec" in x for x in j):
+            ph = "agent"
+        elif any("docker run" in x for x in j):
+            ph = "run"
+        elif desc:
+            ph = "stage"
+        else:
+            ph = "pre"
+        out[tid] = (btime + start_of[p] / clk, ph)
+    return out
+
+for tid, (t0, ph) in (prep_workers(running_ids) if ws is not None else {}).items():
+    run.append((tid, max(now - t0, 0), ph))
+    running_ids.add(tid)
+run.sort(key=lambda r: -r[1])
 
 n = len(tasks)
 succ = [res[t] for t in res if res[t].get("status") == "success" and t not in running_ids]
@@ -205,10 +272,13 @@ print()
 # ---- 3 · running ---------------------------------------------------------------
 if run:
     spin = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[FR % 10]
+    PHCOL = {"emu": f"{TEAL}emu{R}", "agent": f"{D}agent{R}",
+             "build": f"{GOLD}build{R}", "stage": f"{D2}stage{R}",
+             "run": f"{GOLD}run{R}", "pre": f"{D2}pre{R}"}
     rows = [f"{D}running{R} {D}({len(run)}){R}"]
     for tid, el, phase in run:
         vendor, _, model = tid.partition("__")
-        ph = f"{TEAL}emu{R}" if phase == "emu" else f"{D}agent{R}"
+        ph = PHCOL.get(phase, f"{D}{phase}{R}")
         gauge = ""
         if batch_fresh and st.get("timeout"):
             frac = min(el / st["timeout"], 1.0)
