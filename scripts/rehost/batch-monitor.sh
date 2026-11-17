@@ -8,14 +8,17 @@
 #   --once        single frame and exit
 #
 # Everything shown is derived from REAL state, nothing is cached or faked:
-#   running  = `docker ps` task-* containers (works for agent-run.sh direct
-#              runs AND batch-run.sh; phase emu/agent from a host /proc scan:
-#              qemu-system pid -> cgroup -> container name) PLUS the host
-#              agent-run.sh workers whose container does not exist YET —
-#              their descendant process tree names the prep phase (stage =
+#   running  = work with a LIVE driver: task containers from `docker ps`
+#              whose task has no verdict yet or whose agent-run.sh is
+#              still alive (a true rerun) — phase emu/agent from a host
+#              /proc scan (qemu-system pid -> cgroup -> container name) —
+#              PLUS host agent-run.sh workers not in a container YET (their
+#              descendant process tree names the prep phase: stage =
 #              firmware copies/extraction, build = docker build of the task
-#              image, run = docker run issued, pre = idle between steps),
-#              so the box shows real work whenever batch slots are busy
+#              image, run = docker run issued, pre = idle between steps).
+#              Containers that outlive their driver (kept-for-inspection
+#              shells of JUDGED tasks) are NOT running — they land in a dim
+#              `kept` line and their verdicts count in the success rate
 #   results  = each task folder's result.json (status, duration, promoted)
 #   batch    = batch-run.sh's state file, if present, adds queue/timeout/
 #              ETA context on top
@@ -148,16 +151,9 @@ batch_fresh = st is not None and st.get("root") == ROOTDIR \
 
 ws = workers()
 emu_cts = qemu_pids_by_container() if ws is not None else set()
-run = []                                     # (tid, elapsed, phase)
-running_ids = set()
-if ws is not None:
-    for tid, created in ws.items():
-        if tid in tasks.values():
-            run.append((tid, now - created, "emu" if f"task-{tid}" in emu_cts else "agent"))
-            running_ids.add(tid)
 
-# ---- host agent-run.sh workers whose container is not up yet ---------------
-def prep_workers(seen):
+# ---- live host agent-run.sh drivers (supervision proof) --------------------
+def host_workers():
     kids, args_of, start_of = {}, {}, {}
     try:
         pids = [p for p in os.listdir("/proc") if p.isdigit()]
@@ -181,7 +177,6 @@ def prep_workers(seen):
     except OSError:
         pass
     clk = os.sysconf("SC_CLK_TCK")
-    tset = set(tasks.values())
     out = {}
     for p, a in args_of.items():
         if not any(x.endswith("agent-run.sh") for x in a[:3]):
@@ -192,8 +187,6 @@ def prep_workers(seen):
             continue
         parts = d.rstrip("/").split("/")
         tid = re.sub(r"[^a-z0-9._-]", "-", f"{parts[-2]}__{parts[-1]}".lower())
-        if tid in seen or tid not in tset:
-            continue
         stack, desc = [int(p)], set()
         while stack:
             q = stack.pop()
@@ -214,9 +207,23 @@ def prep_workers(seen):
         out[tid] = (btime + start_of[p] / clk, ph)
     return out
 
-for tid, (t0, ph) in (prep_workers(running_ids) if ws is not None else {}).items():
-    run.append((tid, max(now - t0, 0), ph))
-    running_ids.add(tid)
+host = host_workers()
+run = []                                     # (tid, elapsed, phase)
+running_ids = set()
+kept = []                                    # judged tasks whose container still lingers
+if ws is not None:
+    for tid, created in ws.items():
+        if tid not in tasks.values():
+            continue
+        if tid not in res or tid in host:    # in flight, or truly rerunning
+            run.append((tid, now - created, "emu" if f"task-{tid}" in emu_cts else "agent"))
+            running_ids.add(tid)
+        else:
+            kept.append(tid)                 # kept-for-inspection shell — NOT running
+for tid, (t0, ph) in host.items():
+    if tid in tasks.values() and tid not in running_ids:
+        run.append((tid, max(now - t0, 0), ph))
+        running_ids.add(tid)
 run.sort(key=lambda r: -r[1])
 
 n = len(tasks)
@@ -270,6 +277,8 @@ box([f"{bar}  {annot}",
 print()
 
 # ---- 3 · running ---------------------------------------------------------------
+KEPT_LINE = (f"{D2}kept (judged, driver gone): {', '.join(sorted(kept))}{R}"
+             if kept else "")
 if run:
     spin = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[FR % 10]
     PHCOL = {"emu": f"{TEAL}emu{R}", "agent": f"{D}agent{R}",
@@ -286,9 +295,11 @@ if run:
             gw = 12
             gauge = f" {D2}▏{R}{col}{'█' * round(frac * gw)}{R}{D2}{'░' * (gw - round(frac * gw))}▎{R} {int(frac * 100):>3}%"
         rows.append(f"{TEAL}{spin}{R} {D}{vendor}{R} {cut(model, 18):<18}{fmt_dur(el):>8}{gauge}   {ph}")
+    if KEPT_LINE:
+        rows.append(KEPT_LINE)
     box(rows)
 else:
-    box([f"{D}running{R}  {D2}nothing running{R}"])
+    box([f"{D}running{R}  {D2}nothing running{R}"] + ([KEPT_LINE] if KEPT_LINE else []))
 print()
 
 # ---- 4 · recent -----------------------------------------------------------------
