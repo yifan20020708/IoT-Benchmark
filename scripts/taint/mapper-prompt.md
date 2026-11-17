@@ -178,8 +178,16 @@ contract violation even when `callsite.ret_site` holds the value).
 ```json
 { "binaries": [ { "path": "rootfs/bin/httpd",
                   "role": "web daemon",
-                  "reason": "…your evidence, one or two lines…" } ] }
+                  "reason": "…your evidence, one or two lines…" } ],
+  "service_port": 443, "service_scheme": "https" }
 ```
+`service_port` (with `service_scheme`) is the TCP port the ATTACK SURFACE
+daemon actually serves — proven live by your own auth/dispatch probing, not
+guessed. The grader's serving gate and DoS liveness channel follow it; an
+omitted value means 80. Declare it especially when :80 answers with some
+unrelated early static server while the real daemon binds another port
+minutes into boot (Dahua-style NVR: everything on HTTPS :443) — that gap
+silently mis-grades every poc otherwise.
 
 **dispatch.json**
 ```json

@@ -1,12 +1,22 @@
 #!/bin/bash
 # agent-scan :: taint — verify container: re-grade ONE unit's archive
 #
-# Usage: verify-run.sh [--parallel N] [--mode M] [--boot-timeout S] [--keep]
-#                      [--no-report] [--report-timeout S] <model-dir> <unit-name>
+# Usage: verify-run.sh [--parallel N] [--mode M] [--boot-timeout S] [--port P]
+#                      [--keep] [--no-report] [--report-timeout S] <model-dir> <unit-name>
 #
 #   <model-dir>     data/firmware/<vendor>/<model> (solved image present)
 #   <unit-name>     taint-work-output/functions/<unit> whose archive under
 #                   hunt-output/functions/<unit>/pocs/ is to be re-graded
+#   --port          the model's ATTACK-SURFACE service port. Default order:
+#                   explicit --port > boundary.json "service_port" (declared
+#                   by the Mapper from its own probing) > 80.
+#                   TN3108-style firmwares whose early-answering :80 is an
+#                   unrelated static server and whose real daemon (Kylin)
+#                   binds :443 minutes later MUST be graded on 443:
+#                   the serving gate and the DoS liveness channel both
+#                   follow this port, and TARGET_PORT handed to the poc
+#                   equals it). Never auto-detect: the gate must ask "is the
+#                   attacked daemon up", not "did some server wake up".
 #   --parallel      concurrent poc jobs (default 4, capped at #pocs).
 #                   One poc = one dedicated container = one fresh boot,
 #                   exactly as the serial protocol; parallelism only
@@ -17,7 +27,7 @@
 #                   THE grading boot — canary-file CI + crash-line BOF
 #                   + liveness all live there; treat it as fixed)
 #   --boot-timeout  seconds to wait for a freshly booted emulation to
-#                   answer HTTP before the poc run is recorded
+#                   accept TCP on --port before the poc run is recorded
 #                   boot_failed / rc3-inconclusive-equivalent (default 300)
 #   --keep          leave ALL per-poc verify containers running afterwards
 #                   (the protocol's reset button is each container's
@@ -66,12 +76,14 @@
 set -euo pipefail
 
 MODE="debug"; BOOT_TIMEOUT=300; KEEP=""
+PORT=""
 REPORT_ON=1; REPORT_TIMEOUT=2400; PAR=4
 while [ $# -gt 0 ]; do
     case "$1" in
         --parallel) PAR="$2"; shift 2 ;;
         --mode) MODE="$2"; shift 2 ;;
         --boot-timeout) BOOT_TIMEOUT="$2"; shift 2 ;;
+        --port) PORT="$2"; shift 2 ;;
         --report-timeout) REPORT_TIMEOUT="$2"; shift 2 ;;
         --no-report) REPORT_ON=""; shift ;;
         --keep) KEEP=1; shift ;;
@@ -79,11 +91,20 @@ while [ $# -gt 0 ]; do
         *) break ;;
     esac
 done
-MODEL="${1:?usage: verify-run.sh [--parallel N] [--mode M] [--boot-timeout S] <model-dir> <unit-name>}"
-UNIT="${2:?usage: verify-run.sh [--parallel N] [--mode M] [--boot-timeout S] <model-dir> <unit-name>}"
+MODEL="${1:?usage: verify-run.sh [--parallel N] [--mode M] [--boot-timeout S] [--port P] <model-dir> <unit-name>}"
+UNIT="${2:?usage: verify-run.sh [--parallel N] [--mode M] [--boot-timeout S] [--port P] <model-dir> <unit-name>}"
 MODEL="$(cd "$MODEL" 2>/dev/null && pwd)" || { echo "[-] no such dir: $MODEL" >&2; exit 1; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPTS="$ROOT/scripts/taint"
+
+# attack-surface port: explicit --port > Phase-1 declaration > legacy default
+if [ -z "$PORT" ]; then
+    PORT=$(python3 -I -c "
+import json,sys
+try: print(json.load(open(sys.argv[1])).get('service_port') or 80)
+except Exception: print(80)" "$MODEL/taint-work-output/boundary.json" 2>/dev/null) || PORT=80
+    [ "$PORT" != 80 ] && echo "[verify-run] port from boundary.json service_port: $PORT"
+fi
 
 UNITOUT="$MODEL/hunt-output/functions/$UNIT"
 POCSDIR="$UNITOUT/pocs"
@@ -105,6 +126,11 @@ SAFE_RE='^[A-Za-z0-9._@+-]+\.(py|c)$'
 mapfile -t POC_LIST < <(cd "$POCSDIR" && find . -maxdepth 1 -type f \( -name '*.py' -o -name '*.c' \) -printf '%f\n' | grep -E "$SAFE_RE" | sort)
 mapfile -t JUNK_LIST < <(cd "$POCSDIR" && find . -maxdepth 1 -type f -printf '%f\n' | grep -vE "$SAFE_RE" | sort)
 
+if [ -d "$VOUT" ]; then
+    # preserve the previous grading pass (evidence of past verdicts must
+    # never be silently overwritten by a re-run)
+    mv "$VOUT" "$UNITOUT/verify.pre-$(date +%Y%m%d-%H%M%S)"
+fi
 rm -rf "$VOUT"; mkdir -p "$VOUT/evidence"
 RESULTS="$VOUT/poc-results.jsonl"; : > "$RESULTS"
 printf '%s\n' "${JUNK_LIST[@]}" 2>/dev/null | grep -v '^$' > "$VOUT/violations.txt" || : > "$VOUT/violations.txt"
@@ -112,15 +138,15 @@ V_START=$(date +%s)
 
 write_final_result() {   # python assembles result.json from the harvest files
     python3 - "$VOUT/result.json" "$RESULTS" "$VOUT/violations.txt" \
-              "$TASK_ID" "$UNIT" "$IMAGE" "$MODE" "$V_START" <<'EOF'
+              "$TASK_ID" "$UNIT" "$IMAGE" "$MODE" "$V_START" "$PORT" <<'EOF'
 import json, sys, collections, datetime, os
-p, results, junk, task, unit, image, mode, start = sys.argv[1:9]
+p, results, junk, task, unit, image, mode, start, port = sys.argv[1:10]
 pocs = [json.loads(l) for l in open(results) if l.strip()]
 counts = collections.Counter(x["verdict"] for x in pocs)
 viol = [x for x in open(junk).read().splitlines() if x.strip()]
 infra = sum(1 for x in pocs if x["rc"] == -1)
 json.dump({
-    "task": task, "unit": unit, "image": image, "mode": mode,
+    "task": task, "unit": unit, "image": image, "mode": mode, "port": int(port),
     "status": "success" if infra == 0 else "partial_infra",
     "started_at": datetime.datetime.fromtimestamp(int(start)).astimezone().isoformat(timespec="seconds"),
     "finished_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -171,28 +197,35 @@ run_poc_job() {   # $1 = idx, $2 = poc — self-contained job, writes its own pa
         docker exec "$CTR" chmod +x /usr/local/bin/poc-run /usr/local/bin/emu
         docker cp "$POCSDIR/$poc" "$CTR:/work/poc/$poc"
         docker exec "$CTR" emu "$MODE" >/dev/null 2>&1 || NOTE="emu-boot-cmd-failed"
-        # wait until something answers HTTP; poc-run's own baseline gate
-        # keeps the final say — this loop only removes boot latency
+        # serving gate: wait until the DECLARED attack-surface port accepts
+        # TCP. Do NOT probe plain HTTP on some port that answers early — on
+        # TN3108-style firmwares :80 is an unrelated static server that is up
+        # ~70s before the real daemon (Kylin :443) binds, and grading pocs in
+        # that window kills them at connect() ("no endpoint" aborts, DoS
+        # channels blind). poc-run's own baseline gate keeps the final say.
         local DEADLINE CODE=000
         DEADLINE=$(( $(date +%s) + BOOT_TIMEOUT ))
         while :; do
-            CODE=$(docker exec "$CTR" bash -c '
+            CODE=$(docker exec -e GATEPORT="$PORT" "$CTR" bash -c '
                 IP=$( { cat /opt/FirmAE-pro/scratch/*/ip /opt/FirmAE-pro/scratch/*/ip.[0-9]* 2>/dev/null; } | head -1)
-                if [ -n "$IP" ]; then curl -s -m 3 -o /dev/null -w "%{http_code}" "http://$IP/" 2>/dev/null; else echo 000; fi' 2>/dev/null) || CODE=000
-            [ -z "$CODE" ] && CODE=000
-            [ "$CODE" != "000" ] && break
+                if [ -n "$IP" ] && timeout 3 bash -c "exec 3<>/dev/tcp/$IP/$GATEPORT" 2>/dev/null; then
+                    echo up
+                else
+                    echo 000
+                fi' 2>/dev/null) || CODE=000
+            [ "$CODE" = "up" ] && break
             [ "$(date +%s)" -ge "$DEADLINE" ] && break
             sleep 5
         done
-        if [ "$CODE" != "000" ]; then
+        if [ "$CODE" = "up" ]; then
             set +e
-            docker exec "$CTR" bash -c "poc-run \"/work/poc/$poc\" --out-root /work/poc-runs/$IDX"
+            docker exec "$CTR" bash -c "poc-run \"/work/poc/$poc\" --port \"$PORT\" --out-root /work/poc-runs/$IDX"
             RC=$?
             set -e
             mkdir -p "$EVDIR"
             docker cp "$CTR:/work/poc-runs/$IDX/." "$EVDIR/" 2>/dev/null || NOTE="evidence-copy-failed"
         else
-            NOTE="no HTTP answer within ${BOOT_TIMEOUT}s after emu $MODE"
+            NOTE="no tcp answer on port $PORT within ${BOOT_TIMEOUT}s after emu $MODE"
         fi
         [ -n "$KEEP" ] || docker rm -f "$CTR" >/dev/null 2>&1 || true
     else
