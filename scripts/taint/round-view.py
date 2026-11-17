@@ -888,9 +888,17 @@ def build_page(hits, ts):
             .replace("__TOTAL__", str(len(hits)))
             .replace("__DATA__", data))
 
-def serve(root, port):
+def serve(root, port, token=None):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from http.cookies import SimpleCookie, CookieError
+    from urllib.parse import urlparse, parse_qs
+    import secrets
     ROOT_R = os.path.realpath(root)
+    DENIED = ("<!doctype html><meta charset=utf-8><title>401</title>"
+              "<body style=\"font-family:ui-monospace,monospace;padding:2em\">"
+              "<h2>401 — token required</h2>"
+              "<p>Append <code>?token=&lt;TOKEN&gt;</code> to the URL once; "
+              "a cookie keeps the session open.</p></body>")
     TYPES = {".json": "application/json", ".md": "text/plain; charset=utf-8",
              ".py": "text/plain; charset=utf-8", ".c": "text/plain; charset=utf-8",
              ".txt": "text/plain; charset=utf-8", ".log": "text/plain; charset=utf-8",
@@ -898,35 +906,59 @@ def serve(root, port):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         def log_message(self, *a): pass
-        def _send(self, code, ctype, body):
+        def _send(self, code, ctype, body, set_cookie=None):
             data = body.encode() if isinstance(body, str) else body
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
+            if set_cookie:
+                self.send_header("Set-Cookie", set_cookie)
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(data)
         def do_GET(self):
-            p = self.path.split("?")[0]
+            u = urlparse(self.path)
+            p = u.path
+            grant_cookie = None
+            if token:
+                try:
+                    jar = SimpleCookie(self.headers.get("Cookie") or "")
+                except CookieError:
+                    jar = SimpleCookie()
+                m = jar.get("rv_token")
+                granted = bool(m and m.value == token)
+                if not granted:
+                    q = parse_qs(u.query).get("token") or []
+                    if q and q[0].isascii() and secrets.compare_digest(q[0], token):
+                        granted = True
+                        grant_cookie = ("rv_token=" + token
+                                        + "; Path=/; HttpOnly; SameSite=Strict"
+                                        + "; Max-Age=604800")
+                if not granted:
+                    self._send(401, "text/html; charset=utf-8", DENIED)
+                    return
             if p in ("/", "/dashboard.html"):
                 hits, ts = payload(root)          # fresh scan per request
-                self._send(200, "text/html; charset=utf-8", build_page(hits, ts))
+                self._send(200, "text/html; charset=utf-8",
+                           build_page(hits, ts), grant_cookie)
             elif p == "/__data__":
                 hits, ts = payload(root)
                 self._send(200, "application/json",
                            json.dumps({"ts": ts, "hits": hits},
-                                      ensure_ascii=False).replace("</", "<\\/"))
+                                      ensure_ascii=False).replace("</", "<\\/"),
+                           grant_cookie)
             else:  # raw vault files (evidence etc); no dir listings
                 f = os.path.realpath(os.path.join(ROOT_R, p.lstrip("/")))
                 if f.startswith(ROOT_R + os.sep) and os.path.isfile(f):
                     self._send(200, TYPES.get(os.path.splitext(f)[1].lower(),
                                               "application/octet-stream"),
-                               open(f, "rb").read())
+                               open(f, "rb").read(), grant_cookie)
                 else:
                     self._send(404, "text/plain", "404\n")
     srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     print(f"[round-view] LIVE serve http://0.0.0.0:{port}/dashboard.html "
-          f"(root {root}; rescans per request, page polls every 4s)", file=sys.stderr)
+          f"(root {root}; rescans per request, page polls every 4s"
+          + ("; token-gated" if token else "") + ")", file=sys.stderr)
     srv.serve_forever()
 
 def main():
@@ -941,9 +973,15 @@ def main():
                          "page polls /__data__ every 4s, so new vault entries "
                          "(verify re-run, report agent landing) appear by "
                          "themselves — donuts animate as they land")
+    ap.add_argument("--token", default=os.environ.get("ROUND_VIEW_TOKEN"),
+                    metavar="TOKEN",
+                    help="gate the live serve behind a token: every request "
+                         "needs it — open http://<ip>:<port>/?token=<TOKEN> "
+                         "once and a cookie keeps the session. "
+                         "No effect without --serve.")
     a = ap.parse_args()
     if a.serve:
-        serve(a.root, a.serve)
+        serve(a.root, a.serve, a.token)
         return
     hits, ts = payload(a.root)
     out = a.out or os.path.join(a.root, "dashboard.html")
