@@ -36,11 +36,18 @@
 # attempt's outputs on start).
 #
 # Parallel-safety: the Mapper's static phases (agent reasoning + host-side
-# Ghidra call-site-dump) parallelize fine, but EVERY solved-image boot runs
-# `add_partition` against the shared host /dev loop table, and the solved
-# images predate the loop-shim — two parallel mappers' auth boots use
-# identical container-internal image paths and can cross-claim loops
-# (silent cross-model corruption). --jobs > 1 is opt-in and on your head.
+# Ghidra call-site-dump) parallelize fine. The auth-probe boot also touches
+# the host-global loop table (`add_partition` -> unqualified `losetup` on a
+# container-identical image path), but solved images carry the loop-shim
+# BAKED at commit time (rehost installs it into the agent container's
+# /usr/local/sbin, where PATH shadows the real losetup; the boot line's
+# `--privileged -v /dev:/dev` is exactly what the shim's cross-container
+# flock needs), so concurrent boots cannot cross-claim loops. Legacy
+# exception: images committed before the shim existed boot unshimmed —
+# verify with
+#   docker run --rm --entrypoint sha256sum <image> /usr/local/sbin/losetup
+# before trusting --jobs > 1 on them. Shim behavior under concurrency is
+# validated by interleaved multi-container losetup stress runs.
 #
 # Per-model console log: <model>/taint-batch.log (deliberately NOT under
 # taint-work/ — mapper-run.sh clears that tree on every start).
@@ -49,7 +56,7 @@
 # argument; reads the state file this script maintains.
 set -euo pipefail
 
-usage() { sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,51p' "$0" | sed 's/^# \{0,1\}//'; }
 
 JOBS=1
 TIMEOUT=7200
@@ -71,9 +78,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ROOTDIR="$(cd "$ROOTDIR" && pwd)"
 case "$JOBS" in ''|*[!0-9]*|0) echo "[-] --jobs must be a positive integer" >&2; exit 1 ;; esac
 case "$TIMEOUT" in ''|*[!0-9]*|0) echo "[-] --timeout must be a positive integer" >&2; exit 1 ;; esac
-[ "$JOBS" -gt 1 ] && echo "[!] --jobs > 1: concurrent solved-image AUTH BOOTS share the host" \
-    "/dev loop table without the loop-shim and can cross-claim loops" \
-    "(static phases are safe) — see Parallel-safety in the header" >&2
+[ "$JOBS" -gt 1 ] && echo "[*] --jobs > 1: auth boots are loop-safe because solved images" \
+    "carry the baked loop-shim — legacy images without it need --jobs 1" \
+    "(see Parallel-safety in the header)." >&2
 
 # ---- discovery (recursive; same exclusions as rehost batch-run.sh) --------
 mapfile -t ALL < <(find "$ROOTDIR" -type f -name task.json -printf '%h\n' \
