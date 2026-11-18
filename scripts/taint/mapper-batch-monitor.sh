@@ -117,11 +117,12 @@ for fw, tid in tasks.items():
 # One pass collects the wrappers AND any analyzeHeadless java, attributed to
 # a model via its command line.
 def proc_scan():
-    runs, ghidra = [], set()
+    ghidra = set()
+    runs = {}                                  # model -> elapsed
     try:
         up = float(open("/proc/uptime").read().split()[0])
     except Exception:
-        return runs, ghidra
+        return [], ghidra
     hz = os.sysconf("SC_CLK_TCK")
     models = [fw for fw in tasks]
     for pid in os.listdir("/proc"):
@@ -142,12 +143,17 @@ def proc_scan():
                     start = int(st[19])              # field 22 (starttime)
                 except Exception:
                     continue
-                runs.append((model, up - start / hz))
+                # The script body AND its forked pipeline subshells share one
+                # argv — count each model once, at the OLDEST process (the
+                # parent starts before any descendant, so max elapsed wins).
+                el = up - start / hz
+                if el > runs.get(model, -1):
+                    runs[model] = el
         elif b"analyzeHeadless" in raw:
             for fw in models:
                 if fw.encode() in raw:
                     ghidra.add(fw)
-    return runs, ghidra
+    return list(runs.items()), ghidra
 
 # ---- auth boots: taint-map-* containers, image -> task id --------------------
 auth_tids = set()
