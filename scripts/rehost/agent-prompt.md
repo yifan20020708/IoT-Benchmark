@@ -24,6 +24,21 @@ service: kernel cmdline params per mode, init/console respawn storms,
 service-start paths that hang when `user_debug=31` or the backdoor scripts
 are active. Iterate per mode with `emu debug` / `emu serial -f`.
 
+Three grading facts apply to every fix you make:
+
+- **Verification re-boots from a clean process state.** Whatever you did
+  at runtime — materialized filesystems, hand-made device nodes, services
+  you started yourself — is not reproduced unless the engine's own boot
+  path creates it. A fix that does not appear in the `git diff` of
+  `/opt/FirmAE-pro` does not exist for the harness.
+- **Verification boots are on a clock.** Each harness boot gives the web
+  service a fixed budget (default 360 s) to answer. A service that comes
+  up only after that deadline — e.g. because a crash/respawn loop slows
+  the boot — is graded as not serving, even if it would serve eventually.
+- **Both modes are graded together, on the same final state.** Pass +
+  fail = fail. After any late edit, re-run the self-check to catch a mode
+  you already passed from regressing.
+
 ## Environment
 
 - FirmAE-pro engine: `/opt/FirmAE-pro` — a **git repository**. Your source
@@ -37,7 +52,10 @@ are active. Iterate per mode with `emu debug` / `emu serial -f`.
   arbitration and image logs, inferred network state).
 - You have a wall-clock budget; when it expires your process is killed and
   the current state is verified as-is. Prioritize reaching a working state
-  over exhaustive investigation.
+  over exhaustive investigation. The engine is a git repo: commit
+  known-good states as you go, revert experiments that regress them, and
+  converge onto a self-check-passing state well before the budget ends —
+  a full self-check costs two clean re-boots.
 - Self-check: `bash /usr/local/bin/hverify` re-boots your final state from a
   clean process state once per mode (run, debug) and applies the
   Mode Matrix above exactly the way the harness will (several minutes per
@@ -57,12 +75,12 @@ are active. Iterate per mode with `emu debug` / `emu serial -f`.
 - Read `/work/task.json`, then update it preserving its structure:
   `status` (`success`/`fail`), `iid`, `ip`, `diagnosis` (what was actually
   wrong), `fixes` (list of engine changes), `iterations` (emu-check runs),
-  `verified` (true only if your own `hverify` passed all three modes),
+  `verified` (true only if your own `hverify` passed both modes),
   `modes` (your last hverify per-mode outcomes, e.g.
-  `{"run":"pass","debug":"pass","analyze":"fail:zero-execve-audit-lines"}`).
+  `{"run":"pass","debug":"pass"}`).
 - Leave your engine edits in the `/opt/FirmAE-pro` working tree (commit or
   not — the harness diffs against the pristine baseline). Do not write patch
   files yourself.
 
-Work autonomously. Finish when hverify passes all three modes, or when you
+Work autonomously. Finish when hverify passes both modes, or when you
 have exhausted well-reasoned approaches.
