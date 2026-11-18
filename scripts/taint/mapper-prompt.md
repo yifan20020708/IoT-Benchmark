@@ -245,8 +245,7 @@ reads) instead of `field`.
 
 ## Discipline
 
-- Your wall-clock budget is {{TIMEOUT}} seconds, enforced by a watchdog
-  that kills the session. When it fires, the CURRENT contents of
+- When your session ends — however it ends — the CURRENT contents of
   `taint-work-output/` are what later phases consume — write valid partial
   output continuously (after each task, after each batch of function
   packages), never only at the end.
