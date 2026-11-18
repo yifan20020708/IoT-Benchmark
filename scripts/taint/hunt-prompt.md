@@ -179,6 +179,5 @@ exhaust the function.
 /work/archive/             rc=0-verified pocs only
 ```
 
-You have {{TIMEOUT}} seconds of wall clock, enforced by a watchdog.
 Nothing else constrains you: choose your own targets, hypotheses, tools
 and techniques.
