@@ -215,8 +215,14 @@ if ws is not None:
     for tid, created in ws.items():
         if tid not in tasks.values():
             continue
-        if tid not in res or tid in host:    # in flight, or truly rerunning
-            run.append((tid, now - created, "emu" if f"task-{tid}" in emu_cts else "agent"))
+        h0 = host.get(tid)
+        if tid not in res or h0 is not None:   # in flight, or truly rerunning
+            if h0 is not None and h0[0] > created:
+                # rerun: driver is younger than this container -> it is a
+                # stale kept-shell; the live driver is the true clock/phase
+                run.append((tid, max(now - h0[0], 0), h0[1]))
+            else:
+                run.append((tid, now - created, "emu" if f"task-{tid}" in emu_cts else "agent"))
             running_ids.add(tid)
         else:
             kept.append(tid)                 # kept-for-inspection shell — NOT running
