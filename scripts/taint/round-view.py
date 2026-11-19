@@ -189,7 +189,7 @@ body{background:var(--bg);color:var(--ink);font:13.5px/1.55 var(--sans);font-var
 button,input{font:inherit;color:inherit}
 :focus-visible{outline:2px solid var(--accent);outline-offset:1px;border-radius:6px}
 ::selection{background:var(--accent-soft)}
-.app{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh;overflow:hidden}
+.app{display:grid;grid-template-columns:320px minmax(0,1fr);height:100vh;overflow:hidden}
 
 /* ── rail ─────────────────────────────────────────────── */
 .rail{background:var(--surface);border-right:1px solid var(--line);padding:22px 20px;display:flex;flex-direction:column;gap:24px;position:sticky;top:0;height:100vh;overflow:hidden}
@@ -242,7 +242,7 @@ button,input{font:inherit;color:inherit}
 .xstats .xc.z{opacity:.4}
 .ring{flex:1;display:flex;flex-direction:column;align-items:center;gap:10px;min-width:0}
 .ring .rt{font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--faint)}
-.rd{position:relative;width:96px;height:96px}
+.rd{position:relative;width:104px;height:104px}
 .rd svg{width:100%;height:100%;display:block;overflow:visible}
 .rd .trk{stroke:var(--surface2)}
 .rd .hair{stroke:var(--line);opacity:.6}
@@ -981,6 +981,9 @@ def main():
                          "No effect without --serve.")
     a = ap.parse_args()
     if a.serve:
+        if a.token == "":
+            ap.error("--token is empty — refusing to serve unauthenticated "
+                     "(a vanished token file feeds an empty string here)")
         serve(a.root, a.serve, a.token)
         return
     hits, ts = payload(a.root)
