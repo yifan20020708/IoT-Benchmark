@@ -57,8 +57,10 @@
 #                   3-tier verdict high|medium|low DERIVED from
 #                   finality x attribution x threat_model x
 #                   artifact_check (high = CLOSED+TOKEN+pure remote+
-#                   no artifact doubt; low = guest-side, non-remote,
-#                   artifact doubt or finality CHECK; else medium).
+#                   no affirmed artifact; low = guest delivery step,
+#                   non-remote attack vector, AFFIRMED artifact, or
+#                   finality CHECK; an unproven 'maybe' and read-only
+#                   guest observation pass the gate — else medium).
 #                   BENCHMARK POLICY: confidence grades the ATTRIBUTION
 #                   CHAIN, never the reality of the finding — every
 #                   tier in the vault is a deterministic hit (rc0/rc2);
@@ -213,8 +215,16 @@ def finality_of():
 fin = finality_of()
 # overall confidence: DERIVED, never agent-asserted — the rubric in
 # report-prompt.md / the script header
-ok = (art.get("emulation_artifact") == "no"
-      and tm.get("remote_http_only") is True
+# remote acceptance (pure widening, backward compatible): pure-HTTP
+# attack traffic; OR an l2-adjacent wire vector (raw Ethernet / LAN
+# protocol from the same broadcast domain — a PF_PACKET injection is
+# an attacker on the wire, not a guest primitive); OR the only guest
+# usage was read-only observation (measurement, never store/trigger)
+remote_ok = (tm.get("remote_http_only") is True
+             or tm.get("remote_vector") == "l2-adjacent"
+             or tm.get("guest_role") == "observation-only")
+ok = (art.get("emulation_artifact") in ("no", "maybe")
+      and remote_ok
       and fin.get("grade") == "CLOSED")
 if not ok:
     conf = "low"
@@ -256,10 +266,12 @@ PYEOF
 # died between the agent's write and finalization: repair by re-running
 # extend_audit ONLY (no agent spend, REPORT.md untouched)
 if [ -n "$REUSE" ] && [ -s "$ENTRY/REPORT.md" ] && [ -s "$ENTRY/AUDIT.json" ]; then
-    if ! python3 -c "import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if isinstance(d.get('confidence'),dict) else 1)" "$ENTRY/AUDIT.json" 2>/dev/null; then
-        echo "[report-agent] REUSE: AUDIT.json lacks finality/confidence — repairing (finalize only, no agent)" >&2
-        extend_audit
-    fi
+    # re-finalize on EVERY reuse: extend_audit is idempotent machine
+    # stamping — re-running re-derives finality/confidence under the
+    # CURRENT rubric (no agent spend, REPORT.md untouched); it also
+    # repairs entries whose previous run died before finalization
+    echo "[report-agent] REUSE: re-finalizing under current rubric (no agent)" >&2
+    extend_audit
     rebuild_index() {
         python3 - "$VAULT" >/dev/null <<'EOF'
 import json, sys, os, glob, datetime

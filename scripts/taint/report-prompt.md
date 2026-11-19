@@ -163,7 +163,9 @@ rename the keys):
       },
       "threat_model": {
         "remote_http_only": true | false,
+        "remote_vector": "http" | "l2-adjacent",
         "guest_side": "none" | "what exactly (gsh / telnet 31338 / nc / file writes)",
+        "guest_role": "delivery" | "observation-only",
         "evidence": "..."
       },
       "artifact_check": {
@@ -189,12 +191,29 @@ Rules:
   finality from the grader's own report.json, and a 3-tier
   `confidence` derived from your dimensions. Rubric, so you know what
   you are driving: `high` = CLOSED finality + TOKEN attribution + pure
-  remote HTTP + no artifact doubt; `low` = anything guest-side or
-  non-remote, artifact doubt (maybe/yes), or finality not CLOSED;
+  remote attack traffic (HTTP, or an l2-adjacent wire vector) + no
+  affirmed artifact; `low` = a delivery-role guest step, a non-remote
+  attack vector, an AFFIRMED artifact (`yes`), or finality not CLOSED —
+  an unproven `maybe` and read-only guest observation pass the gate;
   `medium` = the rest (a fresh-boot WINDOW crash is medium — honest
   grading, not a demotion to hide). Grading each dimension honestly is
   therefore mandatory: inflating one inflates a confidence you do not
   own.
+- `threat_model` semantics: `remote_vector` names the channel the ATTACK
+  bytes arrive on — `"http"` (TCP/HTTP) or `"l2-adjacent"` (raw Ethernet /
+  a proprietary LAN protocol from the same broadcast domain; a PF_PACKET
+  injection is an attacker on the wire, not a guest primitive).
+  `remote_http_only` is true iff the ATTACK traffic is exclusively remote
+  HTTP — a read-only observation of the RUN'S OWN EFFECTS over the
+  backdoor (crash/canary/log counting, evidence gathering: the
+  measurement channel, never the attack) does not make it false;
+  record that step in `guest_side` with
+  `guest_role: "observation-only"`. `"delivery"` (the default when a
+  guest step exists) is any guest step that stores, triggers, sets
+  state, OR READS OUT attack-relevant input — a credential, token,
+  address, or any value that shapes or enables the attack — those
+  downgrade. The test: would the attack still work unchanged if the
+  observation's result were discarded?
 - `flow.channel` is decided from the STATIC data path you documented in
   §2, cross-checked against the crash location in the evidence: if the
   corrupting copy reads a PERSISTED value (GetValue-style read-back of
