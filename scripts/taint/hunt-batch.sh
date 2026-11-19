@@ -3,6 +3,7 @@
 #
 # Usage: hunt-batch.sh [--parallel N] [--timeout S] [--units u1,u2[,...]]
 #                      [--rehunt] [--reverify] [--dry-run] [--verify-mode M]
+#                      [--verify-retries N] [--verify-gate-confirm S]
 #                      <model-dir>
 #
 #   <model-dir>    data/firmware/<vendor>/<model> — every directory under
@@ -18,6 +19,10 @@
 #   --rehunt       re-run the agent even where run/result.json says success
 #   --reverify     re-grade archives even where verify/result.json exists
 #   --verify-mode  emulation mode for verify boots (default debug)
+#   --verify-retries N       extra verify grading attempts per non-hit poc
+#                  (default: verify-run.sh's own 5)
+#   --verify-gate-confirm S verify gate stability confirmation after first
+#                  "up", seconds (default: verify-run.sh's own 8)
 #   --dry-run      print the schedule, execute nothing
 #
 # Unit pipeline (one worker per unit, units independent):
@@ -40,6 +45,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPTS="$ROOT/scripts/taint"
 
 PARALLEL=2; TIMEOUT=3600; UNITS=""; REHUNT=""; REVERIFY=""; DRYRUN=""; VMODE="debug"
+VRETRIES=""; VCONFIRM=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --parallel) PARALLEL="$2"; shift 2 ;;
@@ -48,6 +54,8 @@ while [ $# -gt 0 ]; do
         --rehunt) REHUNT=1; shift ;;
         --reverify) REVERIFY=1; shift ;;
         --verify-mode) VMODE="$2"; shift 2 ;;
+        --verify-retries) VRETRIES="$2"; shift 2 ;;
+        --verify-gate-confirm) VCONFIRM="$2"; shift 2 ;;
         --dry-run) DRYRUN=1; shift ;;
         -h|--help) sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) break ;;
@@ -116,7 +124,7 @@ verify_done() {
     [ -f "$MODEL/hunt-output/functions/$1/verify/result.json" ]
 }
 
-echo "[batch] model=$(basename "$MODEL") units=${#LIST[@]} parallel=$PARALLEL timeout=${TIMEOUT}s verify-mode=$VMODE"
+echo "[batch] model=$(basename "$MODEL") units=${#LIST[@]} parallel=$PARALLEL timeout=${TIMEOUT}s verify-mode=$VMODE${VRETRIES:+ verify-retries=$VRETRIES}${VCONFIRM:+ verify-gate-confirm=$VCONFIRM}"
 echo "[batch] logs: $BLOGDIR"
 
 run_unit() {   # full pipeline for ONE unit; both stages always attempted
@@ -132,7 +140,7 @@ run_unit() {   # full pipeline for ONE unit; both stages always attempted
         fi
         exec 7>"$STATEF.lock"; flock 7; state stage "$u" verify; exec 7>&-
         RC=0
-        "$SCRIPTS/verify-run.sh" --mode "$VMODE" "$MODEL" "$u" || RC=$?
+        "$SCRIPTS/verify-run.sh" --mode "$VMODE" ${VRETRIES:+--retries "$VRETRIES"} ${VCONFIRM:+--gate-confirm "$VCONFIRM"} "$MODEL" "$u" || RC=$?
         echo "[batch] verify rc=$RC"
         exec 7>"$STATEF.lock"; flock 7; state stage "$u" ""; exec 7>&-
     } >"$log" 2>&1
