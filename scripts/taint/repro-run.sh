@@ -129,18 +129,42 @@ gate_probe() {  # raw TCP probe of the declared attack-surface port
 if [ -n "$PROSE_ONLY" ]; then
     # reuse the SEALED replay: organizer agent + re-render only — no boot, no
     # traffic, session.jsonl/report.json untouched (prompt-tweak re-runs)
-    [ -f "$REP/repro.json" ] || { echo "[-] --prose-only: no repro/repro.json in $ENTRY" >&2; exit 1; }
-    read -r RC ATTEMPT BOOT_S CTR IMAGE PORT < <(python3 -c '
+    if [ -f "$REP/repro.json" ]; then
+        read -r RC ATTEMPT BOOT_S CTR IMAGE PORT < <(python3 -c '
 import json, sys
 r = json.load(open(sys.argv[1]))
 print(r["rc"], r["attempts"], r["boot_s"], r["container"], r["image"], r["port"])' "$REP/repro.json")
-    [ "$RC" = "$VAULT_RC" ] || { echo "[-] --prose-only: sealed rc=$RC != vault rc=$VAULT_RC" >&2; exit 1; }
-    # carry the sealed run's attempts ledger forward (repro.json is rewritten)
-    python3 -c 'import json,sys
+        # carry the sealed run's attempts ledger forward (repro.json is rewritten)
+        python3 -c 'import json,sys
 r = json.load(open(sys.argv[1]))
 with open(sys.argv[2], "w") as f:
     for a in r.get("attempts_ledger", []):
         f.write(json.dumps(a) + "\n")' "$REP/repro.json" "$LEDGER" 2>/dev/null || true
+    elif [ -f "$REP/report.json" ] && [ -f "$REP/session.jsonl" ]; then
+        # recovery: a render killed mid-way leaves the sealed replay complete
+        # but repro.json unwritten — derive the fields from report.json and
+        # the session's cap markers instead of forcing a fresh replay (which
+        # on hung-poc entries costs the whole 20+ min window again).
+        # report.json carries no rc; only verdict.result=triggered (rc=0) is
+        # derivable, any other sealed state refuses recovery and re-replays.
+        read -r RC ATTEMPT BOOT_S CTR < <(python3 -c '
+import json, sys
+rep = sys.argv[1]
+r = json.load(open(rep + "/report.json"))
+rc = 0 if (r.get("verdict") or {}).get("result") == "triggered" else -1
+ev = [json.loads(l) for l in open(rep + "/session.jsonl",
+                                  encoding="utf-8", errors="replace") if l.strip()]
+t0 = min(e["ts"] for e in ev)
+ph = {e["t"]: e["ts"] - t0 for e in ev if e.get("s") == "cap"}
+print(rc, 1, int(ph.get("gate-stable", 0)), "sealed-replay")' "$REP")
+        [ "$RC" = 0 ] || { echo "[-] --prose-only recovery: sealed verdict not rc=0-derivable — full replay needed" >&2; exit 1; }
+        # IMAGE/PORT keep the values recomputed at the top; one-attempt ledger
+        ledger "$ATTEMPT" "$RC" "$BOOT_S" ""
+        echo "[repro] prose-only (recovery): derived rc=$RC boot=${BOOT_S}s from sealed report.json + session.jsonl"
+    else
+        echo "[-] --prose-only: no sealed replay in $REP (need repro.json, or report.json+session.jsonl)" >&2; exit 1
+    fi
+    [ "$RC" = "$VAULT_RC" ] || { echo "[-] --prose-only: sealed rc=$RC != vault rc=$VAULT_RC" >&2; exit 1; }
     echo "[repro] prose-only: reusing sealed replay rc=$RC from $REP"
 else
 ATTEMPT=0; RC=-9
@@ -237,16 +261,25 @@ open(sys.argv[1],"a",encoding="utf-8").write(
     mkdir -p "$REP/pocrun"
     docker cp "$CTR:/work/poc-runs/repro/." "$REP/pocrun/" 2>/dev/null || true
     RUND=$(ls -dt "$REP"/pocrun/poc-* 2>/dev/null | head -1)
-    # the poc's own step log, verbatim, re-timed across the attack window
+        # the poc's own step log, verbatim, re-timed across the attack window.
+    # The step is 0.15s/line for a normal short stdout, but scales down
+    # proportionally when the line count would overshoot the real window:
+    # a hung poc-run once emitted 39k "trigger pending" lines and the fixed
+    # step re-timed them to +99min — past attack-end, invisible in the video.
+    # (One python pass, not one spawn per line — 39k spawns took minutes.)
     if [ -n "$RUND" ] && [ -f "$RUND/stdout.txt" ]; then
-        i=0
-        while IFS= read -r ln; do
-            [ -n "$ln" ] && python3 -c 'import json,sys
-open(sys.argv[1],"a",encoding="utf-8").write(json.dumps(
-    {"ts":float(sys.argv[3])+int(sys.argv[4])*0.15,"s":"out","t":sys.argv[2]},
-    ensure_ascii=False)+"\n")' "$SESSION" "$ln" "$AT0" "$i" || true
-            i=$((i + 1))
-        done < "$RUND/stdout.txt"
+        python3 - "$SESSION" "$RUND/stdout.txt" "$AT0" <<'PYEOF'
+import json, sys, time
+sess, outp, at0 = sys.argv[1], sys.argv[2], float(sys.argv[3])
+lines = [l.rstrip("\n") for l in
+         open(outp, encoding="utf-8", errors="replace") if l.strip()]
+span = max(1.0, time.time() - at0)
+step = min(0.15, span / max(1, len(lines)))
+with open(sess, "a", encoding="utf-8") as f:
+    for i, l in enumerate(lines):
+        f.write(json.dumps({"ts": at0 + i * step, "s": "out", "t": l},
+                           ensure_ascii=False) + "\n")
+PYEOF
     fi
     # canary new records (CI class) — verbatim from this run's log
     if [ -n "$RUND" ] && [ -f "$RUND/canary_log.txt" ]; then
