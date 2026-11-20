@@ -17,7 +17,10 @@ Scenes: title -> boot time-lapse (declared 20x) -> baseline alive -> attack
 window (SPLIT SCREEN: left = attack terminal, right = LIVE serial tail, the
 decisive line lands highlighted in real time) -> serial/canary/probe exhibit
 (verbatim window lines) -> verdict summary (report.json fields verbatim) ->
-provenance card. Boot is compressed; the decisive window is 1:1 real time.
+provenance card. Boot is compressed; the decisive window is 1:1 real time —
+unless pathologically long (a hung poc-run), in which case head 45s + tail
+105s stay 1:1 and the middle fast-forwards at a DECLARED 20x. Frames are
+streamed into ffmpeg as they are drawn, so memory is O(1) at any length.
 
 Deterministic facts layer: decisive lines, rc/verdict fields and timestamps
 are class templates filled ONLY from this run's bytes. The explanatory layer
@@ -185,10 +188,35 @@ def main():
         exh = win[max(0, idx - 4):idx + 8]
         exh_src = "serial"
 
-    frames, capT = [], 0.0
+    # frames STREAM into ffmpeg as they are drawn: the previous all-in-RAM
+    # list hit 14+ GB on a long session (each 960x540 RGB frame is ~1.5 MB).
+    out_mp4 = out_mp4 or os.path.join(rep_dir, "repro.mp4")
+    out_srt = out_srt or os.path.join(rep_dir, "repro.srt")
+    ff = subprocess.Popen(
+        ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo",
+         "-pix_fmt", "rgb24", "-s", "%dx%d" % (W, H), "-r", str(FPS), "-i", "-",
+         "-c:v", "libx264", "-preset", "medium", "-crf", "23",
+         "-pix_fmt", "yuv420p", "-movflags", "+faststart", out_mp4],
+        stdin=subprocess.PIPE)
+
+    class Sink:
+        """.append(im) streams the frame immediately; .hold(n) re-streams the
+        last frame's bytes n times (the old hold() semantics, O(1) memory)."""
+        def __init__(self):
+            self.n = 0
+            self.last = None
+        def append(self, im):
+            self.last = im.tobytes()
+            ff.stdin.write(self.last)
+            self.n += 1
+        def hold(self, n):
+            for _ in range(n):
+                ff.stdin.write(self.last)
+                self.n += 1
+
+    frames, capT = Sink(), 0.0
     def hold(n):
-        for _ in range(n):
-            frames.append(frames[-1])
+        frames.hold(n)
 
     def newframe():
         im = Image.new("RGB", (W, H), BG)
@@ -239,17 +267,43 @@ def main():
     caps.add(capT, capT + S3, "基线:服务存活(HTTP 200 / TCP alive)——攻击前状态确认")
     capT += S3
 
-    # ---------------- scene 4: attack window, split screen, REAL TIME ----
-    atk_dur = max(6.0, (atk1 - atk0) + 4.0)
+    # ---------------- scene 4: attack window, split screen ----------------
+    # 1:1 real time by default. A pathologically long window (a hung poc-run
+    # once produced 26 min of "trigger pending" spam) is re-timed piecewise:
+    # head and tail stay 1:1, the middle fast-forwards at a DECLARED 20x —
+    # same contract as the boot time-lapse: re-time openly, never add content.
+    WIN = max(6.0, atk1 - atk0)
+    ATK_HEAD, ATK_TAIL, ATK_MID_X = 45.0, 105.0, 20.0
+    if WIN <= ATK_HEAD + ATK_TAIL + 60.0:
+        segs = [(WIN, 1.0)]                       # (session-seconds, speed)
+    else:
+        segs = [(ATK_HEAD, 1.0),
+                (WIN - ATK_HEAD - ATK_TAIL, ATK_MID_X),
+                (ATK_TAIL, 1.0)]
+    COMPRESSED = len(segs) > 1
+    atk_dur = sum(s / x for s, x in segs) + 4.0   # video-seconds of scene 4
     n_atk = int(atk_dur * FPS)
+    def win_map(vt):
+        """video-time in the scene -> (window offset in session-seconds, speed)"""
+        for s, x in segs:
+            d = s / x
+            if vt <= d:
+                return vt * x, x
+            vt -= d
+        return WIN, segs[-1][1]
     LX0, LX1 = 16, 470
     RX0, RX1 = 486, W - 16
     PY0, PY1 = 88, H - 16
     for k in range(n_atk):
-        now = atk0 + k / FPS
+        off, speed = win_map(k / FPS)
+        now = atk0 + off
         im, d = newframe()
-        draw_bar(d, "攻击窗口 · 1:1 实时(不压缩)",
-                 "左:攻击终端(poc 逐字输出)  右:串口实时尾随 — 因果同屏")
+        bar = ("攻击窗口 · 1:1 实时(不压缩)" if speed == 1.0 else
+               "攻击窗口 · 中段 %g× 快进(已声明压缩)" % speed)
+        sbar = "左:攻击终端(poc 逐字输出)  右:串口实时尾随 — 因果同屏"
+        if COMPRESSED:
+            sbar += " · 会话 t=+%.0fs / 窗口全长 %.0fs" % (off, WIN)
+        draw_bar(d, bar, sbar)
         yl = pane(d, LX0, PY0, LX1, PY1, "attack terminal — poc stdout")
         yr = pane(d, RX0, PY0, RX1, PY1, "serial tail — live")
         left = [(e["t"], (ACC if e["t"].startswith("$") else
@@ -270,8 +324,10 @@ def main():
                if klass == "BOF" else
                "canary 注入日志新增记录——命令注入被执行" if klass == "CI"
                else "服务由 alive 转 dead,窗口内无崩溃行/无重启——DoS")
+    seg_txt = ("实时头 %.0fs + 中段 %g× 快进 + 实时尾 %.0fs;窗口原长 %.0fs"
+               % (ATK_HEAD, ATK_MID_X, ATK_TAIL, WIN)) if COMPRESSED else "实时"
     caps.add(capT, capT + atk_dur + 2.0,
-             "攻击窗口(实时):发送 PoC;%s" % sub("attack", atk_why))
+             "攻击窗口(%s):发送 PoC;%s" % (seg_txt, sub("attack", atk_why)))
     capT += atk_dur + 2.0
 
     # ---------------- scene 5: exhibit (verbatim) ----------------
@@ -348,21 +404,11 @@ def main():
     caps.add(capT, capT + S7, "溯源:poc sha256=%s…;完整说明见 REPRO.md" % (
         (meta.get("poc_sha256") or "")[:16])); capT += S7
 
-    out_mp4 = out_mp4 or os.path.join(rep_dir, "repro.mp4")
-    out_srt = out_srt or os.path.join(rep_dir, "repro.srt")
-    ff = subprocess.Popen(
-        ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo",
-         "-pix_fmt", "rgb24", "-s", "%dx%d" % (W, H), "-r", str(FPS), "-i", "-",
-         "-c:v", "libx264", "-preset", "medium", "-crf", "23",
-         "-pix_fmt", "yuv420p", "-movflags", "+faststart", out_mp4],
-        stdin=subprocess.PIPE)
-    for f in frames:
-        ff.stdin.write(f.tobytes())
     ff.stdin.close()
     rc = ff.wait()
     caps.write(out_srt)
     print("[repro-video] %s frames=%d dur=%.1fs rc=%d srt=%s captions=%s" % (
-        out_mp4, len(frames), len(frames) / FPS, rc, out_srt,
+        out_mp4, frames.n, frames.n / FPS, rc, out_srt,
         "agent" if SUB else "template"))
     sys.exit(rc)
 
