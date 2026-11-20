@@ -402,8 +402,8 @@ footer{flex:0 0 auto;margin:0;color:var(--faint);font:11px var(--mono);border-to
 .dimgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin:14px 0}
 .dim{background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:15px 17px;min-width:0}
 .dim h4{margin:0 0 8px;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);font-weight:650;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.dim h4 b{font-size:11px;letter-spacing:.04em;text-transform:none;font-weight:700}
-.dim p{margin:0;font-size:12.5px;color:var(--mut)}
+.dim h4 b{font-size:11px;letter-spacing:.04em;text-transform:none;font-weight:700;overflow-wrap:anywhere}
+.dim p{margin:0;font-size:12.5px;color:var(--mut);overflow-wrap:anywhere}   /* novelty.similar-style unbroken slash-joined handler lists must wrap, not blow out the card */
 pre.qs{margin:0;padding:12px 14px;background:var(--bg);border:1px solid var(--line);border-radius:10px;font:11.5px/1.65 var(--mono);color:var(--mut);white-space:pre-wrap;word-break:break-word;overflow:auto}
 .shacap{font:11.5px var(--mono);color:var(--faint);margin:0 0 9px}
 .shacap b{color:var(--accent)}
@@ -414,14 +414,14 @@ pre.qs{margin:0;padding:12px 14px;background:var(--bg);border:1px solid var(--li
 .rpt{font-size:13.5px;min-width:0}
 .rpt h1,.rpt h2,.rpt h3,.rpt h4{margin:24px 0 9px;line-height:1.3;text-wrap:balance}
 .rpt h1{font-size:18px}.rpt h2{font-size:15px;border-bottom:1px solid var(--line);padding-bottom:5px}.rpt h3{font-size:13.5px}
-.rpt p{margin:8px 0;max-width:70ch}
-.rpt code{font-family:var(--mono);background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:11.8px}
+.rpt p{margin:8px 0;max-width:70ch;overflow-wrap:anywhere}
+.rpt code{font-family:var(--mono);background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:11.8px;overflow-wrap:anywhere}
 .rpt pre{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px 14px;overflow:auto}
 .rpt pre code{background:none;border:none;padding:0;font-size:11.5px}
 .rpt ul,.rpt ol{margin:8px 0;padding-left:22px}
-.rpt li{margin:3px 0;max-width:72ch}
+.rpt li{margin:3px 0;max-width:72ch;overflow-wrap:anywhere}
 .rpt table{border-collapse:collapse;margin:10px 0;font-size:12.3px}
-.rpt th,.rpt td{border:1px solid var(--line);padding:5px 10px;text-align:left;vertical-align:top}
+.rpt th,.rpt td{border:1px solid var(--line);padding:5px 10px;text-align:left;vertical-align:top;overflow-wrap:anywhere}
 .rpt th{background:var(--surface2)}
 .rpt blockquote{margin:8px 0;padding:2px 12px;border-left:2px solid var(--accent);color:var(--mut)}
 .rpt a{color:var(--sky)}
