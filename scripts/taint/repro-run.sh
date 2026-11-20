@@ -63,6 +63,20 @@ done
 ENTRY="${1:?usage: repro-run.sh [opts] <vault-entry-dir>}"
 ENTRY="$(cd "$ENTRY" 2>/dev/null && pwd)" || { echo "[-] no such entry: $1" >&2; exit 1; }
 [ -f "$ENTRY/meta.json" ] || { echo "[-] not a vault entry: $ENTRY" >&2; exit 1; }
+# entry-level lock: with the report-agent's INLINE auto-continuation, a
+# manual repro-batch run and a direct call can land on the same entry —
+# two concurrent workers rm -rf and mv repro/ under each other and corrupt
+# the pack. The staleness threshold beats the batch's 2h wall budget, so a
+# killed run's lock self-heals on the next pass instead of wedging it.
+LOCK="$ENTRY/.repro-lock"
+if [ -d "$LOCK" ]; then
+    LAGE=$(( $(date +%s) - $(stat -c %Y "$LOCK" 2>/dev/null || echo 0) ))
+    [ "$LAGE" -ge 9000 ] || { echo "[-] $ENTRY: repro already in flight (lock age ${LAGE}s) — refusing to double-run" >&2; exit 1; }
+    echo "[repro] stealing stale lock (age ${LAGE}s)" >&2
+    rm -rf "$LOCK"
+fi
+mkdir "$LOCK" 2>/dev/null || { echo "[-] $ENTRY: lock race — another repro run won" >&2; exit 1; }
+trap 'rm -rf "$LOCK" 2>/dev/null' EXIT
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPTS="$ROOT/scripts/taint"
 
@@ -109,6 +123,7 @@ cleanup() {   # TERM-safe: a batch --timeout kill must not leak the container.
     rm -f "$LEDGER"
     [ -n "$TPID" ] && kill "$TPID" 2>/dev/null
     [ -n "$CTR" ] && docker rm -f "$CTR" >/dev/null 2>&1
+    [ -n "$LOCK" ] && rm -rf "$LOCK" 2>/dev/null
     return 0
 }
 trap cleanup EXIT

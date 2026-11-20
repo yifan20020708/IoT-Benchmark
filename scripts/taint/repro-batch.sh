@@ -74,7 +74,7 @@ case "$NOVELTY" in 0-DAY|N-DAY|any) ;; *) echo "[-] --novelty must be 0-DAY, N-D
 #      having) a sealed replay. The vault itself is the state file —
 #      resumable by construction, no ledger to corrupt.
 mapfile -t LIST < <(python3 -I - "$VAULT" "$FORCE" "$PROSE" "$VENDOR" "$MODEL" "$ENTRIES" "$NOVELTY" <<'EOF'
-import json, glob, os, sys
+import json, glob, os, sys, time
 vault, force, prose, vendor, model, entries, novelty = sys.argv[1:8]
 want = set(e for e in entries.split(",") if e) if entries else None
 for mp in sorted(glob.glob(os.path.join(vault, "*", "*", "*", "meta.json"))):
@@ -100,6 +100,11 @@ for mp in sorted(glob.glob(os.path.join(vault, "*", "*", "*", "meta.json"))):
     elif state == "done" and not force:
         continue
     elif state == "missed-replay" and not force:
+        continue
+    # fresh entry lock = an inline auto-repro (report-agent chain) or
+    # another batch is mid-run on it — scheduling would double-run
+    lk = os.path.join(ed, ".repro-lock")
+    if os.path.isdir(lk) and time.time() - os.path.getmtime(lk) < 9000:
         continue
     print(ed)
 EOF

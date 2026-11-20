@@ -21,6 +21,11 @@
 #                    gateway accepts low|high|max)
 #   --snapshot-only  archive poc+evidence+meta and SKIP the LLM agent
 #   --render-only    also render the prompt, then stop (plumbing checks)
+#   --no-repro       skip the repro stage (default: a finalized
+#                    CONFIRMED ∩ 0-DAY entry with no repro pack continues
+#                    INLINE into repro-run.sh — one case walks
+#                    hunt -> report -> repro in ONE job slot, so the hunt
+#                    batch's --parallel is the repro concurrency cap)
 #
 # The vault (data/round/<vendor>/<model>/<poc-stem>-<graded-ts>/) is an
 # APPEND-ONLY record of every deterministic-graded hit, immune to hunt or
@@ -87,11 +92,13 @@
 set -euo pipefail
 
 TIMEOUT=2400; MODE="debug"; SNAPSHOT_ONLY=""; RENDER_ONLY=""; EFFORT="high"
+NO_REPRO=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --timeout) TIMEOUT="$2"; shift 2 ;;
         --mode) MODE="$2"; shift 2 ;;
         --effort) EFFORT="$2"; shift 2 ;;
+        --no-repro) NO_REPRO=1; shift ;;
         --snapshot-only) SNAPSHOT_ONLY=1; shift ;;
         --render-only) SNAPSHOT_ONLY=1; RENDER_ONLY=1; shift ;;
         -h|--help) awk 'NR==1{next} /^set -euo/{exit} {sub(/^# ?/,"");print}' "$0"; exit 0 ;;
@@ -261,6 +268,37 @@ print(f"[report-agent] audit merged: confidence={conf} novelty={m['novelty']} "
 PYEOF
 }
 
+maybe_repro() {   # repro-stage auto-continuation — INLINE, same job slot:
+    # one case walks hunt -> report -> repro without ever leaving the
+    # worker that owns it (the hunt batch's --parallel IS the repro
+    # concurrency cap). Gate: CONFIRMED (confidence high|medium) ∩ 0-DAY,
+    # and no repro pack yet (done/missed-replay never auto-retry — a
+    # missed class burns boots; repro-batch.sh --force is that decision).
+    # repro-run's rc is ABSORBED: a miss or infra failure is the repro
+    # stage's own ledger business (.repro-auto.log + repro/repro.json)
+    # and must never mask the report result or the exit-code contract.
+    [ -n "$NO_REPRO" ] && return 0
+    [ -f "$SCRIPTS/repro-run.sh" ] || return 0
+    local conf nov state
+    read -r conf nov state < <(python3 -c '
+import json, sys
+m = json.load(open(sys.argv[1] + "/meta.json"))
+r = m.get("repro") or {}
+print(m.get("confidence"), m.get("novelty"), r.get("state") or "-")' "$ENTRY" 2>/dev/null) || return 0
+    case "$conf" in high|medium) ;; *) return 0 ;; esac
+    [ "$nov" = "0-DAY" ] || return 0
+    case "$state" in done|missed-replay) return 0 ;; esac
+    echo "[report-agent] auto-repro: CONFIRMED($conf) ∩ 0-DAY — repro stage inline (log: $ENTRY/.repro-auto.log)" >&2
+    local rrc=0
+    bash "$SCRIPTS/repro-run.sh" "$ENTRY" >>"$ENTRY/.repro-auto.log" 2>&1 || rrc=$?
+    case $rrc in
+        0) echo "[report-agent] repro: pack landed (video + serial logs + REPRO.md)" >&2 ;;
+        3) echo "[report-agent] repro: MISSED-REPLAY — no video (repro/repro.json holds the ledger); backfill: repro-batch.sh --entries $(basename "$ENTRY") --force" >&2 ;;
+        *) echo "[report-agent] repro: failed rc=$rrc (see $ENTRY/.repro-auto.log); backfill: repro-batch.sh --entries $(basename "$ENTRY")" >&2 ;;
+    esac
+    return 0
+}
+
 # a reused entry that already has BOTH agent outputs needs no agent —
 # BUT an AUDIT.json without the script extensions means a previous run
 # died between the agent's write and finalization: repair by re-running
@@ -300,6 +338,8 @@ os.replace(tmp, os.path.join(vault, "index.json"))
 EOF
     }
     rebuild_index
+    maybe_repro   # a reused entry re-finalized under the current rubric
+                  # may have BECOME CONFIRMED ∩ 0-DAY — same inline rule
     echo "[report-agent] hit already reported (same poc hash): $ENTRY/REPORT.md" >&2
     echo "${ENTRY#"$ROOT"/}"
     exit 0
@@ -496,5 +536,6 @@ else
     echo "[report-agent] WARN: no REPORT.md after agent (rc=$AGENT_RC, ${DUR}s) — snapshot kept, retry is automatic on the next verify pass" >&2
 fi
 rebuild_index
+if [ -s "$ENTRY/REPORT.md" ]; then maybe_repro; fi
 echo "${ENTRY#"$ROOT"/}"
 [ -s "$ENTRY/REPORT.md" ]
