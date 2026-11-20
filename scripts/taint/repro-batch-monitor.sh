@@ -12,9 +12,10 @@
 # Everything shown is derived from REAL state, nothing is cached or faked:
 #   schedule = the batch's schedule.json (entries, parallel, timeout, filters)
 #   running  = host /proc scan for repro-run.sh wrapper processes, elapsed
-#              from the wrapper's process start; phase = "agent" when any
-#              host claude process has its cwd inside that entry (the static
-#              organizer), else "replay" (boot/gate/poc/serial capture)
+#              from the wrapper's process start; phase = "render" when a
+#              repro-video.py is drawing that entry, "agent" when any host
+#              claude process has its cwd inside it (the static organizer),
+#              else "replay" (boot/gate/poc/serial capture)
 #   results  = the batch's events.jsonl (rc + wall time per completion), and
 #              for entries with no event yet the vault's own meta.repro
 #   rc map   = 0 done (video) · 3 missed-replay (NO video, refused) ·
@@ -105,10 +106,11 @@ except FileNotFoundError:
 def proc_scan():
     runs = {}                               # entry -> elapsed (oldest wins)
     agent_entries = set()
+    render_entries = set()
     try:
         up = float(open("/proc/uptime").read().split()[0])
     except Exception:
-        return runs, agent_entries
+        return runs, agent_entries, render_entries
     hz = os.sysconf("SC_CLK_TCK")
     for pid in os.listdir("/proc"):
         if not pid.isdigit():
@@ -131,6 +133,10 @@ def proc_scan():
                 e = cand[-1]
                 if el > runs.get(e, -1):
                     runs[e] = el
+        elif any(a.endswith("repro-video.py") for a in argv):
+            cand = [a for a in argv if a in eset]
+            if cand:
+                render_entries.add(cand[-1])
         elif b"claude" in raw:
             try:
                 cwd = os.readlink(f"/proc/{pid}/cwd")
@@ -139,9 +145,9 @@ def proc_scan():
             for e in runs:                  # only running entries matter
                 if cwd == e or cwd.startswith(e + os.sep):
                     agent_entries.add(e)
-    return runs, agent_entries
+    return runs, agent_entries, render_entries
 
-runs, agent_entries = proc_scan()
+runs, agent_entries, render_entries = proc_scan()
 
 # ---- classify --------------------------------------------------------------------
 def status_of(e):
@@ -245,7 +251,8 @@ if running:
     rows = [f"{D}running{R} {D}({len(running)}){R}"]
     for e in sorted(running, key=lambda x: -runs[x]):
         el = runs[e]
-        ph = f"{TEAL}agent{R}" if e in agent_entries else f"{D}replay{R}"
+        ph = (f"{GOLD}render{R}" if e in render_entries else
+              f"{TEAL}agent{R}" if e in agent_entries else f"{D}replay{R}")
         gauge = ""
         to = st.get("timeout") or 0
         if to:
