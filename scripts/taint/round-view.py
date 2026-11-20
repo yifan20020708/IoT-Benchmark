@@ -80,6 +80,29 @@ def load_entry(root, vendor, model, ed):
         except Exception:
             poc_src = ""
     conf = sub(aud, "confidence").get("level") or m.get("confidence")
+    # repro dimension (repro-run.sh): machine facts from repro.json + the
+    # organizer agent's REPRO.md; the video itself is served as a raw file
+    rj = {}
+    try:
+        rj = json.load(open(os.path.join(ed, "repro", "repro.json")))
+    except Exception:
+        rj = {}
+    rj = rj if isinstance(rj, dict) else {}
+    rmeta = sub(m, "repro")
+    repro_md = ""
+    rmp = os.path.join(ed, "repro", "REPRO.md")
+    if os.path.exists(rmp):
+        try:
+            repro_md = open(rmp, encoding="utf-8", errors="replace").read()
+        except Exception:
+            repro_md = ""
+    decisive = ""
+    dp = os.path.join(ed, "repro", "decisive.txt")
+    if os.path.exists(dp):
+        try:
+            decisive = open(dp, encoding="utf-8", errors="replace").read()[:8192]
+        except Exception:
+            decisive = ""
     truth = TRUTH.get(conf, "PENDING")
     attr = sub(aud, "attribution")
     tm = sub(aud, "threat_model")
@@ -113,6 +136,17 @@ def load_entry(root, vendor, model, ed):
         "fin_grade": fin.get("grade"), "fin_basis": fin.get("basis"),
         "report": rep, "poc_src": poc_src, "poc_ext": poc_ext,
         "poc_sha": m.get("poc_sha256"),
+        "vpath": os.path.relpath(ed, root),
+        "repro_state": rmeta.get("state") or rj.get("state"),
+        "repro_rc": rj.get("rc", rmeta.get("rc")),
+        "repro_attempts": rj.get("attempts"),
+        "repro_boot_s": rj.get("boot_s"),
+        "repro_events": rj.get("session_events"),
+        "repro_at": rj.get("at") or rmeta.get("at"),
+        "repro_video": rj.get("video") or {},
+        "repro_files": rj.get("files") or {},
+        "repro_md": repro_md,
+        "repro_decisive": decisive,
     }
 
 def scan(root):
@@ -470,6 +504,7 @@ pre.qs{margin:0;padding:12px 14px;background:var(--bg);border:1px solid var(--li
       <button data-t="audit">Evidence audit</button>
       <button data-t="poc">PoC</button>
       <button data-t="report">Report</button>
+      <button data-t="repro">Repro</button>
     </div>
     <div class="dheadspace"></div>
   </div>
@@ -477,6 +512,7 @@ pre.qs{margin:0;padding:12px 14px;background:var(--bg);border:1px solid var(--li
     <div class="pane" id="pane-audit"></div>
     <div class="pane" id="pane-poc" hidden></div>
     <div class="pane" id="pane-report" hidden></div>
+    <div class="pane" id="pane-repro" hidden></div>
   </div>
 </aside>
 <div id="toast"></div>
@@ -781,6 +817,27 @@ function openDrawer(i){
     ? `<p class="shacap">the exact bytes the grader replayed · sha256 <b>${esc((h.poc_sha||"").slice(0,16))}…</b></p><pre class="qs">${esc(h.poc_src)}</pre>`
     : `<pre class="qs">poc source not embedded</pre>`;
   $("#pane-report").innerHTML = `<div class="rpt">${md(h.report||"*no report yet — the report agent has not landed*")}</div>`;
+  /* ── Repro pane: the live-replay video + machine facts + REPRO.md ──
+     video bytes come ONLY from a same-class replay (repro-run.sh refuses
+     to render otherwise); links are vault-relative raw-file routes. */
+  const vurl = esc(h.vpath)+"/repro/repro.mp4";
+  const vb = (h.repro_video||{}).bytes||0, vs = (h.repro_video||{}).sha256||"";
+  const fl = Object.entries(h.repro_files||{});
+  $("#pane-repro").innerHTML = h.repro_state==="done" ? `
+    <div class="sec"><h5>Reproduction video — this live replay (attack window 1:1 real time)</h5>
+      <video controls preload="metadata" style="width:100%;max-height:430px;background:#000;border:1px solid var(--line)" src="${vurl}"></video>
+      <p class="shacap"><a href="${vurl}" download>download repro.mp4</a> · ${(vb/1048576).toFixed(2)} MB · sha256 <b>${esc(vs.slice(0,16))}…</b> · <a href="${esc(h.vpath)}/repro/repro.srt" download>subtitles repro.srt</a></p></div>
+    <div class="sec"><h5>Replay facts — repro.json (machine record, not prose)</h5><pre class="qs">${esc(JSON.stringify(
+        {state:h.repro_state, replay_rc:h.repro_rc, vault_rc:h.rc, attempts:h.repro_attempts,
+         boot_s:h.repro_boot_s, session_events:h.repro_events, at:h.repro_at},null,1))}</pre></div>
+    ${h.repro_decisive?`<div class="sec"><h5>Decisive serial lines — decisive.txt (this replay, verbatim)</h5><pre class="qs">${esc(h.repro_decisive)}</pre></div>`:""}
+    ${fl.length?`<div class="sec"><h5>Attachments — all downloadable for review</h5><pre class="qs">${fl.map(([n,f])=>`<a href="${esc(h.vpath)}/repro/${esc(n)}" download>${esc(n)}</a> <i style="color:var(--faint)">${((f.bytes||0)/1024).toFixed(0)}KB</i>`).join("\n")}</pre></div>`:""}
+    <div class="sec"><h5>REPRO.md — overall reproduction document (organizer agent)</h5>
+      <div class="rpt">${md(h.repro_md||"*no REPRO.md — the video still renders when the agent step fails; burned-in captions fall back to deterministic templates*")}</div></div>`
+    : h.repro_state==="missed-replay" ? `
+    <div class="sec"><h5>Repro — missed-replay (no video)</h5>
+      <p>The live replay did not reproduce the vaulted verdict class. Per the integrity rule the video is <b>REFUSED</b> — never rendered from stale evidence. attempts=${esc(h.repro_attempts)} · at=${esc(h.repro_at||"—")}</p></div>`
+    : `<div class="sec"><h5>Repro</h5><p class="qs">not replayed yet — repro-run.sh has not landed for this entry.</p></div>`;
   switchTab("audit");
   $("#scrim").classList.add("open"); $("#drawer").classList.add("open");
   $(".dbody").scrollTop=0;
@@ -790,7 +847,7 @@ $("#dClose").onclick=closeDrawer; $("#scrim").onclick=closeDrawer;
 $("#dTabs").onclick=e=>{if(e.target.dataset.t)switchTab(e.target.dataset.t);};
 function switchTab(t){
   $$("#dTabs button").forEach(b=>b.classList.toggle("on",b.dataset.t===t));
-  ["audit","poc","report"].forEach(k=>{$("#pane-"+k).hidden = k!==t;});
+  ["audit","poc","report","repro"].forEach(k=>{$("#pane-"+k).hidden = k!==t;});
 }
 
 /* ── live polling ─────────────────────────────────────── */
@@ -877,7 +934,8 @@ def payload(root):
     real change."""
     hits = scan(root)
     key = json.dumps([[h["path"], h["report_state"], h["truth"], h["novelty"],
-                      h["conf"], h["flow"], len(h["report"]), len(h["poc_src"])] for h in hits])
+                      h["conf"], h["flow"], len(h["report"]), len(h["poc_src"]),
+                      h.get("repro_state"), len(h.get("repro_md") or "")] for h in hits])
     return hits, hashlib.md5(key.encode()).hexdigest()
 
 def build_page(hits, ts):
@@ -902,7 +960,8 @@ def serve(root, port, token=None):
     TYPES = {".json": "application/json", ".md": "text/plain; charset=utf-8",
              ".py": "text/plain; charset=utf-8", ".c": "text/plain; charset=utf-8",
              ".txt": "text/plain; charset=utf-8", ".log": "text/plain; charset=utf-8",
-             ".html": "text/html; charset=utf-8"}
+             ".html": "text/html; charset=utf-8", ".mp4": "video/mp4",
+             ".srt": "text/plain; charset=utf-8"}
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         def log_message(self, *a): pass

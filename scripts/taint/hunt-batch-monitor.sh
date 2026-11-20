@@ -219,7 +219,13 @@ box(rows)
 print()
 
 # ---- 2 · progress + scoreboard ---------------------------------------------------
-BARW = IN - 26
+# annotation first, then the bar takes whatever width is LEFT (the old static
+# BARW = IN - 26 overflowed by 1-2 chars once the "· N running" suffix made
+# the annotation 25 chars, so box() cut it to "…runni")
+annot = f"{B}{len(graded_units)}/{b_total}{R} {D}graded{R}"
+if running_now:
+    annot += f" {D}·{R} {GOLD}{len(running_now)} running{R}"
+BARW = max(10, IN - 2 - vlen(annot) - 2)
 segs = [(len(graded_units), GOOD), (len(running_now), GOLD), (pending, D2)]
 total = sum(k for k, _ in segs)
 scaled = [round(k / total * BARW) for k, _ in segs] if total else [0] * len(segs)
@@ -228,9 +234,6 @@ if total:
     scaled[i] += BARW - sum(scaled)
 bar = "".join(col + "█" * s + R for (k, col), s in zip(segs, scaled) if s > 0) \
       or D2 + "░" * BARW + R
-annot = f"{B}{len(graded_units)}/{b_total}{R} {D}graded{R}"
-if running_now:
-    annot += f" {D}·{R} {GOLD}{len(running_now)} running{R}"
 hist_str = " ".join(f"{col}{v}{D}{k}{R}" for k, v, col in
     ((k, hist_counts[k], c) for k, c in (("T", GOOD), ("S", GOLD), ("n", D),
                                          ("I", D), ("P", BAD), ("B", BAD))
