@@ -93,7 +93,7 @@ fi
 
 SESSION="" ; ev() {  # ev <stream> <text> — append one timestamped event
     python3 -c 'import json,sys,time
-open(sys.argv[1],"a",encoding="utf-8").write(
+open(sys.argv[1],"a",encoding="utf-8",errors="surrogateescape").write(
     json.dumps({"ts":time.time(),"s":sys.argv[2],"t":sys.argv[3]},
                ensure_ascii=False)+"\n")' "$SESSION" "$1" "$2"
 }
@@ -249,14 +249,34 @@ while [ "$ATTEMPT" -le "$RETRIES" ]; do
     RC=$?
     set -e
     kill "$TPID" 2>/dev/null || true; wait "$TPID" 2>/dev/null || true
-    # the serial lines that landed DURING the window, with their real ts
-    while read -r ts _rest; do
-        ln="${_rest#SERIAL }"
-        python3 -c 'import json,sys
-open(sys.argv[1],"a",encoding="utf-8").write(
-    json.dumps({"ts":float(sys.argv[2]),"s":"serial","t":sys.argv[3]},
-               ensure_ascii=False)+"\n")' "$SESSION" "$ts" "$ln"
-    done < "$RAWTAIL"
+    # the serial lines that landed DURING the window, with their real ts —
+    # ONE python pass over the RAWTAIL bytes, raw-byte preserving: crash
+    # dumps can carry non-UTF-8 bytes (a TN3108 register dump's 0xd3 killed
+    # 10 workers here with a strict-utf8 UnicodeEncodeError — the replay had
+    # SUCCEEDED, then the write itself killed the run under set -e).
+    # surrogateescape keeps session.jsonl byte-identical to the serial; every
+    # reader downstream opens it with errors="replace". (Also: no per-line
+    # python spawns — 10k+ line windows cost minutes of process churn alone.)
+    python3 - "$SESSION" "$RAWTAIL" <<'PYEOF'
+import json, sys
+sess, raw = sys.argv[1], sys.argv[2]
+with open(raw, "rb") as f:
+    data = f.read()
+with open(sess, "a", encoding="utf-8", errors="surrogateescape") as out:
+    for bline in data.split(b"\n"):
+        if not bline.strip():
+            continue
+        ts_s, _, rest = bline.partition(b" ")   # "<epoch> SERIAL <line>"
+        try:
+            ts = float(ts_s)
+        except ValueError:
+            continue
+        if rest.startswith(b"SERIAL "):
+            rest = rest[7:]
+        out.write(json.dumps({"ts": ts, "s": "serial",
+                              "t": rest.decode("utf-8", "surrogateescape")},
+                             ensure_ascii=False) + "\n")
+PYEOF
     rm -f "$RAWTAIL"
     mkdir -p "$REP/pocrun"
     docker cp "$CTR:/work/poc-runs/repro/." "$REP/pocrun/" 2>/dev/null || true
