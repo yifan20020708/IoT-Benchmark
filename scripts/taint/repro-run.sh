@@ -99,7 +99,20 @@ open(sys.argv[1],"a",encoding="utf-8").write(
 }
 # attempts ledger (verify-run alignment): every attempt is recorded, the
 # score of record is the LAST one, failed attempts stay inspectable
-LEDGER=$(mktemp); trap 'rm -f "$LEDGER"' EXIT
+LEDGER=$(mktemp); CTR=""; TPID=""
+cleanup() {   # TERM-safe: a batch --timeout kill must not leak the container.
+    # set +e FIRST: under set -e a failing kill/docker-rm inside the EXIT trap
+    # aborts the trap and HIJACKS the script's real exit status — measured:
+    # a fully successful run (video+REPRO.md landed) exited 0 -> 1 because
+    # `kill $TPID` hit the already-reaped serial tailer.
+    set +e
+    rm -f "$LEDGER"
+    [ -n "$TPID" ] && kill "$TPID" 2>/dev/null
+    [ -n "$CTR" ] && docker rm -f "$CTR" >/dev/null 2>&1
+    return 0
+}
+trap cleanup EXIT
+trap 'exit 143' TERM INT   # route signals through the EXIT trap
 ledger() {  # ledger <attempt> <rc> <boot_s> <fail_dir>
     python3 -c 'import json,sys,time
 open(sys.argv[1],"a").write(json.dumps({"attempt":int(sys.argv[2]),

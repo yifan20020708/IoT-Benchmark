@@ -1,13 +1,16 @@
 #!/bin/bash
 # agent-scan :: taint — repro batch: CNVD reproduction packs over the vault
 #
-# Usage: repro-batch.sh [--parallel N] [--vendor V] [--model M]
+# Usage: repro-batch.sh [--parallel N] [--timeout S] [--vendor V] [--model M]
 #                       [--entries e1,e2[,...]] [--novelty 0-DAY|N-DAY|any]
 #                       [--force] [--prose-only]
 #                       [--no-agent] [--agent-timeout S] [--retries N]
 #                       [--dry-run] [vault-root]
 #
 #   vault-root     default data/round
+#   --timeout S    per-entry wall budget in seconds (default 7200 = 2h);
+#                  on expiry the worker is TERM'd — repro-run's exit trap
+#                  removes its container, and the entry is booked TIMEOUT
 #   selection      CONFIRMED ∩ 0-DAY entries: meta.confidence ∈ {high,medium}
 #                  AND meta.novelty == 0-DAY (default). CNVD reproduction
 #                  material is produced for 0-day findings only — N-day
@@ -33,18 +36,21 @@
 #                    -> organizer agent (REPRO.md + subtitles) -> video
 #
 # Logs:    <vault-root>/.repro-batch/<UTC-stamp>/<entry>.log
+# State:   <vault-root>/.repro-batch/<UTC-stamp>/{schedule.json,events.jsonl,
+#          rcs.txt} — repro-batch-monitor.sh renders these live
 # Summary: <vault-root>/.repro-batch/<UTC-stamp>/summary.json (+ stdout)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPTS="$ROOT/scripts/taint"
 
-PARALLEL=2; VENDOR=""; MODEL=""; ENTRIES=""; FORCE=""; PROSE=""; DRYRUN=""
+PARALLEL=2; TIMEOUT=7200; VENDOR=""; MODEL=""; ENTRIES=""; FORCE=""; PROSE=""; DRYRUN=""
 NOVELTY="0-DAY"
 PASS=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --parallel) PARALLEL="$2"; shift 2 ;;
+        --timeout) TIMEOUT="$2"; shift 2 ;;
         --vendor) VENDOR="$2"; shift 2 ;;
         --model) MODEL="$2"; shift 2 ;;
         --entries) ENTRIES="$2"; shift 2 ;;
@@ -111,6 +117,16 @@ if [ -n "$DRYRUN" ]; then
     exit 0
 fi
 mkdir -p "$LOGDIR"
+python3 -I - "$LOGDIR/schedule.json" "$VAULT" "$NOVELTY" "$VENDOR" "$MODEL" \
+          "$PROSE" "$FORCE" "$PARALLEL" "$TIMEOUT" "${LIST[@]}" <<'EOF'
+import json, sys, time
+out, vault, nov, vendor, model, prose, force, par, to = sys.argv[1:10]
+json.dump({"vault": vault, "novelty": nov, "vendor": vendor, "model": model,
+           "prose": prose == "1", "force": force == "1",
+           "parallel": int(par), "timeout": int(to), "started_at": time.time(),
+           "finished_at": None, "entries": sys.argv[10:]},
+          open(out, "w"), indent=1)
+EOF
 
 RUN=0
 for ENTRY in "${LIST[@]}"; do
@@ -118,19 +134,30 @@ for ENTRY in "${LIST[@]}"; do
     NAME=$(basename "$ENTRY")
     (
         set +e
-        bash "$SCRIPTS/repro-run.sh" ${PASS+"${PASS[@]}"} "$ENTRY" \
-            >"$LOGDIR/$NAME.log" 2>&1
+        T0=$(date +%s)
+        timeout -k 60 "$TIMEOUT" bash "$SCRIPTS/repro-run.sh" \
+            ${PASS+"${PASS[@]}"} "$ENTRY" >"$LOGDIR/$NAME.log" 2>&1
         rc=$?
+        DUR=$(( $(date +%s) - T0 ))
         echo "$rc $NAME" >> "$LOGDIR/rcs.txt"
+        python3 -I -c 'import json,sys,time
+open(sys.argv[1],"a").write(json.dumps({"ts":time.time(),"rc":int(sys.argv[2]),
+    "dur_s":int(sys.argv[3]),"entry":sys.argv[4]})+"\n")' \
+    "$LOGDIR/events.jsonl" "$rc" "$DUR" "$ENTRY"
         case $rc in
-            0) echo "[repro-batch] done       $NAME" ;;
+            0) echo "[repro-batch] done       $NAME (${DUR}s)" ;;
             3) echo "[repro-batch] MISSED     $NAME (replay did not reproduce — no video)" ;;
+            124|137) echo "[repro-batch] TIMEOUT    $NAME (>${TIMEOUT}s wall budget)" ;;
             *) echo "[repro-batch] FAILED     $NAME (rc=$rc, see $LOGDIR/$NAME.log)" ;;
         esac
     ) &
     RUN=$((RUN + 1))
 done
 wait
+python3 -I -c 'import json,sys,time
+p = sys.argv[1]; d = json.load(open(p))
+d["finished_at"] = time.time(); json.dump(d, open(p, "w"), indent=1)' \
+    "$LOGDIR/schedule.json"
 
 python3 -I - "$LOGDIR" "$RUN" "$PROSE" <<'EOF'
 import json, os, sys, datetime
@@ -142,14 +169,30 @@ if os.path.exists(p):
         l = l.split()
         if len(l) >= 2:
             rcs[l[1]] = int(l[0])
+# vault truth outranks the booked rc: a bookkeeping bug (or a kill between
+# landing and booking) must not mask artifacts that actually exist
+try:
+    sched = json.load(open(os.path.join(logdir, "schedule.json")))
+    for e in sched.get("entries", []):
+        name = os.path.basename(e)
+        try:
+            st = (json.load(open(os.path.join(e, "meta.json")))
+                  .get("repro") or {}).get("state")
+        except Exception:
+            st = None
+        if st in ("done", "missed-replay") and rcs.get(name) not in (0, 3):
+            rcs[name] = 0 if st == "done" else 3
+except Exception:
+    pass
 s = {"generated_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
      "mode": "prose-only" if prose == "1" else "full",
      "selected": run,
      "done": sum(1 for v in rcs.values() if v == 0),
      "missed": sum(1 for v in rcs.values() if v == 3),
-     "failed": sum(1 for v in rcs.values() if v not in (0, 3)),
+     "timeout": sum(1 for v in rcs.values() if v in (124, 137)),
+     "failed": sum(1 for v in rcs.values() if v not in (0, 3, 124, 137)),
      "entries": rcs}
 json.dump(s, open(os.path.join(logdir, "summary.json"), "w"), indent=1)
-print("[repro-batch] summary: %d/%d done, %d missed, %d failed -> %s/summary.json"
-      % (s["done"], run, s["missed"], s["failed"], logdir))
+print("[repro-batch] summary: %d/%d done, %d missed, %d timeout, %d failed -> %s/summary.json"
+      % (s["done"], run, s["missed"], s["timeout"], s["failed"], logdir))
 EOF
