@@ -356,6 +356,12 @@ body.t2 .t1only{display:none!important}
 .dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)} .dot.pend{background:transparent;border:1.5px solid var(--pend)}
 .card .nv{margin-left:auto;font-size:10.5px;font-weight:750;letter-spacing:.1em}
 .day{color:var(--accent)} .nday{color:var(--sky)}
+/* repro badge — a landed reproduction pack (video in the Repro tab).
+   Quiet pill: hairline ok-tinted border, play-glyph drawn in CSS so it
+   never depends on font coverage. */
+.card .rp{display:inline-flex;align-items:center;gap:5px;border:1px solid rgba(92,185,140,.35);background:rgba(92,185,140,.08);border-radius:999px;padding:1.5px 8px 1.5px 7px;font:9.5px var(--mono);font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--ok);white-space:nowrap}
+.card .rp::before{content:"";width:0;height:0;border-left:5px solid var(--ok);border-top:3.5px solid transparent;border-bottom:3.5px solid transparent;margin-right:1px}
+.card:hover .rp{background:rgba(92,185,140,.14);border-color:rgba(92,185,140,.5)}
 .card h4{margin:0;font:13px var(--mono);font-weight:650;letter-spacing:-.01em;overflow-wrap:anywhere}
 .card .un{margin-top:-6px;font:11px var(--mono);color:var(--sky);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .card .cve{font:10.5px var(--mono);color:var(--faint);margin-top:-6px}
@@ -665,6 +671,7 @@ function card(h,i){
   const stTxt = h.truth==="CONFIRMED"?"Confirmed":h.truth==="REJECTED"?"Rejected":"—";
   return `<article class="card" tabindex="0" data-i="${i}" aria-label="${esc(h.poc)}">
     <div class="ctop"><span class="st"><span class="dot ${dot}"></span>${esc(stTxt)}</span>
+      ${h.repro_state==="done"?`<span class="rp" title="reproduction pack landed — replay video, serial logs and REPRO.md in the Repro tab">repro</span>`:""}
       <span class="nv ${h.novelty==="N-DAY"?"nday":"day"}">${esc(h.novelty)}</span></div>
     <h4>${esc(h.poc)}</h4>
     <div class="un">${esc(h.unit)}</div>
