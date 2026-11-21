@@ -45,7 +45,7 @@ STATEF="/tmp/agent-scan-monitor/hunt-$SLUG.json"
 
 render() {
     FR=$FR python3 - "$STATEF" "$MODEL" <<'PYEOF'
-import json, os, re, sys, time, subprocess, shutil, glob
+import json, os, re, sys, time, subprocess, shutil, glob, calendar
 from datetime import datetime
 
 STATEF, MODEL = sys.argv[1], sys.argv[2]
@@ -120,6 +120,7 @@ for u in units:
 
 # ---- live containers (docker ps) ---------------------------------------------
 live = {}
+live_names = []
 try:
     out = subprocess.run(["docker", "ps", "--format", "{{.Names}}"],
                          capture_output=True, text=True, timeout=10).stdout
@@ -129,8 +130,32 @@ try:
             # hunt-<task>-<unit-slug> — unit underscores became dashes
             kind = s.split("-", 1)[0]
             live[re.sub(r"^.*?(?:hunt|verify)-", "", s)] = kind
+            live_names.append(s)
 except Exception:
     pass
+
+# container start times (docker inspect, UTC): the elapsed clock for workers
+# the batch state file no longer knows about — two hunts on one model share
+# STATEF and the later launch overwrites the earlier batch's running roster
+t0 = {}
+if live_names:
+    try:
+        out = subprocess.run(
+            ["docker", "inspect", "--format",
+             "{{.Name}}\t{{.State.StartedAt}}", *live_names],
+            capture_output=True, text=True, timeout=15).stdout
+        for line in out.splitlines():
+            parts = line.split("\t")
+            if len(parts) != 2:
+                continue
+            try:
+                t0[re.sub(r"^.*?(?:hunt|verify)-", "", parts[0].lstrip("/"))] = \
+                    calendar.timegm(time.strptime(
+                        parts[1].split(".")[0], "%Y-%m-%dT%H:%M:%S"))
+            except ValueError:
+                pass
+    except Exception:
+        pass
 
 def unit_live(u):
     us = u.replace("_", "-")
@@ -141,6 +166,14 @@ def unit_live(u):
     for slug, kind in live.items():
         if tail.search(slug):
             return kind
+    return None
+
+def unit_t0(u):
+    us = u.replace("_", "-")
+    tail = re.compile(r"-" + re.escape(us) + r"(-\d+)?$")
+    for slug, ts in t0.items():
+        if tail.search(slug):
+            return ts
     return None
 
 # ---- optional batch state ------------------------------------------------------
@@ -163,7 +196,9 @@ if batch_fresh:
 for u in units:                                 # containers with no state file
     k = unit_live(u)
     if k and u not in running_units:
-        run.append((u, k, 0, st.get("timeout") if st else 3600))
+        # no roster entry → use the container's own StartedAt as the clock
+        el = now - (unit_t0(u) or now)
+        run.append((u, k, el, st.get("timeout") if st else 3600))
         running_units.add(u)
 run.sort(key=lambda r: -r[2])
 
