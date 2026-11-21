@@ -202,7 +202,12 @@ while [ "$ATTEMPT" -le "$RETRIES" ]; do
     docker exec "$CTR" chmod +x /usr/local/sbin/losetup /usr/local/sbin/kpartx 2>/dev/null || true
     docker exec "$CTR" mkdir -p /work/poc /work/poc-runs
     docker cp "$POCFILE" "$CTR:/work/poc/$(basename "$POCFILE")"
-    SER=$(docker exec "$CTR" sh -c 'ls -d /opt/FirmAE-pro/scratch/[0-9]* 2>/dev/null | sort -n | tail -1')/qemu.final.serial.log
+    # numeric scratch dirs ONLY: the RAX200 image carries a build-time
+    # scratch/1-backup (rehost agent's rename, baked in) — `[0-9]*` matches
+    # it, sort -n ties and tail -1 picks the STALE dir, so the whole replay
+    # tails a frozen log: boot sample looks real, window serial is empty
+    # (4 packs rendered with a blank serial panel before this was caught).
+    SER=$(docker exec "$CTR" sh -c 'ls -d /opt/FirmAE-pro/scratch/[0-9]* 2>/dev/null | grep -E "/[0-9]+$" | sort -n | tail -1')/qemu.final.serial.log
     ev cap boot-start
     T_BOOT=$(date +%s)
     docker exec -d "$CTR" emu debug
