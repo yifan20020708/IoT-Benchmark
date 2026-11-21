@@ -5,6 +5,7 @@ data/
 deps/
 .claude/
 .qoder/
+logs/
 
 # large emulation artifacts
 *.tar.gz
