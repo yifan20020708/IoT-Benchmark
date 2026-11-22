@@ -6,6 +6,14 @@
 #
 #   mapper-check.py <model-dir> <run-dir> <agent-rc> <agent-dur-s> <timeout-s> <task-id>
 #
+#   mapper-check.py --probe <model-dir>
+#     read-only pre-flight with the SAME validation rules and zero side
+#     effects: no prune/normalize rewrites, no folder removal, no
+#     result.json. The mapper-prompt tells the agent to run this before
+#     finishing so shape violations are fixed in-run; the post-exit gate
+#     above stays the only writer (and the batch's resume semantics stay
+#     intact — a probe never leaves a result.json behind).
+#
 # Zero content judgment — which call sites are real sources is the next
 # phase's business. Two shape-level transforms, both archived and counted
 # in <run-dir>/result.json:
@@ -33,9 +41,20 @@
 # Exit 0 iff status == success.
 import glob, json, os, shutil, sys
 
-model, rundir = sys.argv[1:3]
-agent_rc, agent_dur, timeout, task = (int(sys.argv[3]), int(sys.argv[4]),
-                                      int(sys.argv[5]), sys.argv[6])
+# --probe <model-dir>: read-only shape pre-flight for the agent's own
+# self-check (see header). All validation paths are shared; every mutation
+# site (rewrite / prune / rmtree / result.json) is gated on not PROBE.
+PROBE = len(sys.argv) > 1 and sys.argv[1] == "--probe"
+if PROBE:
+    if len(sys.argv) != 3:
+        sys.exit("usage: mapper-check.py --probe <model-dir>")
+    model = sys.argv[2]
+    rundir = ""
+    agent_rc, agent_dur, timeout, task = 0, 0, 0, "probe"
+else:
+    model, rundir = sys.argv[1:3]
+    agent_rc, agent_dur, timeout, task = (int(sys.argv[3]), int(sys.argv[4]),
+                                          int(sys.argv[5]), sys.argv[6])
 out = os.path.join(model, "taint-work-output")
 errors = []
 pruned = {}
@@ -67,6 +86,8 @@ def guard(cls, n_pruned, n_pre):
 
 def rewrite(name, obj):
     """archive the agent's original into the run dir, write the pruned file"""
+    if PROBE:
+        return
     shutil.copyfile(os.path.join(out, name), os.path.join(rundir, name + ".raw.json"))
     json.dump(obj, open(os.path.join(out, name), "w"), indent=2, ensure_ascii=False)
 
@@ -163,13 +184,14 @@ for fd in sorted(glob.glob(os.path.join(out, "functions", "*"))):
                 normalized[key] = normalized.get(key, 0) + n_norm
             if len(keep) < len(items):
                 n_pruned_items += len(items) - len(keep)
-            # archive the agent's original before any rewrite — pruned or
-            # renamed records must stay recoverable
-            dst = os.path.join(RAWDIR, fname, kind)
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            shutil.copyfile(p, dst)
-            j[listkey] = keep
-            json.dump(j, open(p, "w"), indent=2, ensure_ascii=False)
+            if not PROBE:
+                # archive the agent's original before any rewrite — pruned or
+                # renamed records must stay recoverable
+                dst = os.path.join(RAWDIR, fname, kind)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copyfile(p, dst)
+                j[listkey] = keep
+                json.dump(j, open(p, "w"), indent=2, ensure_ascii=False)
         if kind == "sources.json":
             n_src += len(keep)
         else:
@@ -178,7 +200,8 @@ for fd in sorted(glob.glob(os.path.join(out, "functions", "*"))):
     # a folder exists iff it holds at least one site: a both-empty folder
     # (agent-written or pruned-empty) is removed with its files
     if both_files and n_here == 0:
-        shutil.rmtree(fd)
+        if not PROBE:
+            shutil.rmtree(fd)
         hollowed += 1
         continue
     n_pkgs += 1
@@ -198,6 +221,18 @@ result = {"task": task, "status": status, "agent_rc": agent_rc,
           "duration_s": agent_dur, "timeout_s": timeout,
           "packages": n_pkgs, "sources": n_src, "getters": n_get,
           "pruned": pruned, "normalized": normalized, "errors": errors[:20]}
+if PROBE:
+    # all violations to stdout (the agent fixes from this list); no files
+    # touched, no result.json — the post-exit gate is the only writer
+    print(f"[mapper-check probe] {'CLEAN — would pass the gate' if not errors else 'VIOLATIONS:'}")
+    if pruned:
+        print(f"  would-prune: {pruned}")
+    if normalized:
+        print(f"  would-normalize (lossless, auto-fixed at the gate): {normalized}")
+    for e in errors:
+        print(f"  ! {e}")
+    sys.exit(0 if not errors else 1)
+
 json.dump(result, open(os.path.join(rundir, "result.json"), "w"), indent=2)
 print(f"[mapper-check] status={status} packages={n_pkgs} "
       f"sources={n_src} getters={n_get}")

@@ -260,6 +260,13 @@ reads) instead of `field`.
   contract violation no matter how good the records are. If you generate
   the files with your own packer script, re-read one emitted file before
   finishing and verify the envelope is there.
+- Before finishing, run the read-only pre-flight from your model dir:
+  `python3 /root/projects/agent-scan/scripts/taint/mapper-check.py --probe .`
+  It applies the exact shape contract the post-exit gate will — envelope
+  keys, non-empty boundary/dispatch lists, required auth keys, prune
+  rules — with zero side effects. Fix everything it reports and re-run
+  until it exits 0. The wrapper's own check after you exit is the verdict;
+  whatever you leave broken there gets pruned or fails the run.
 - Before finishing, self-check: (1) every JSON parses and carries the
   required fields; (2) both files exist in every `functions/` subfolder;
   (3) the auth recipe's evidence contains a request you actually sent;
