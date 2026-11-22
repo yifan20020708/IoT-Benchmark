@@ -267,8 +267,10 @@ reads) instead of `field`.
   rules — with zero side effects. Fix everything it reports and re-run
   until it exits 0. The wrapper's own check after you exit is the verdict;
   whatever you leave broken there gets pruned or fails the run.
-- Before finishing, self-check: (1) every JSON parses and carries the
-  required fields; (2) both files exist in every `functions/` subfolder;
-  (3) the auth recipe's evidence contains a request you actually sent;
-  (4) re-read two source call sites' callees in the decompiled code — do
-  they still look like sources?
+- Before finishing, self-check the two things the probe CANNOT: (1) the
+  auth recipe's evidence contains a request you actually sent —
+  `tested: true` is your claim, no tool can verify it for you; (2) re-read
+  two source call sites' callees in the decompiled code — do they still
+  look like sources? (Shape, keys and file presence are the probe's job;
+  these two are honesty and classification quality — only you can do
+  them.)
