@@ -139,6 +139,11 @@ for fd in sorted(glob.glob(os.path.join(out, "functions", "*"))):
             errors.append(f"functions/{fname}/{kind}: not valid JSON: {e}")
             both_files = False
             continue
+        if not isinstance(j, dict):
+            errors.append(f"functions/{fname}/{kind}: top-level "
+                          f"{type(j).__name__}, expected an object")
+            both_files = False
+            continue
         for k in ("binary", "function", "function_addr", "requests", listkey):
             if k not in j:
                 errors.append(f"functions/{fname}/{kind}: missing '{k}'")

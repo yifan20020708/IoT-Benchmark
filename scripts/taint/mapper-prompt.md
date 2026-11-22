@@ -253,6 +253,13 @@ reads) instead of `field`.
   is static; verifying flows dynamically is the next phase's job.
 - `taint-work/` is yours (scripts, intermediates, notes);
   `taint-work-output/` holds only the contract deliverables.
+- Every output JSON is a top-level OBJECT, never a bare array. Each
+  `functions/*/sources.json` / `getters.json` must carry the envelope keys
+  `binary`, `function`, `function_addr`, `requests` and `sources`/`getters`
+  at the top level — a file that is just `[record, record, …]` is a
+  contract violation no matter how good the records are. If you generate
+  the files with your own packer script, re-read one emitted file before
+  finishing and verify the envelope is there.
 - Before finishing, self-check: (1) every JSON parses and carries the
   required fields; (2) both files exist in every `functions/` subfolder;
   (3) the auth recipe's evidence contains a request you actually sent;
