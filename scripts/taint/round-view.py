@@ -224,10 +224,10 @@ body{background:var(--bg);color:var(--ink);font:13.5px/1.55 var(--sans);font-var
 button,input{font:inherit;color:inherit}
 :focus-visible{outline:2px solid var(--accent);outline-offset:1px;border-radius:6px}
 ::selection{background:var(--accent-soft)}
-.app{display:grid;grid-template-columns:320px minmax(0,1fr);height:100vh;overflow:hidden}
+.app{display:grid;grid-template-columns:320px minmax(0,1fr);height:100vh;height:100dvh;overflow:hidden}
 
 /* ── rail ─────────────────────────────────────────────── */
-.rail{background:var(--surface);border-right:1px solid var(--line);padding:22px 20px;display:flex;flex-direction:column;gap:24px;position:sticky;top:0;height:100vh;overflow:hidden}
+.rail{background:var(--surface);border-right:1px solid var(--line);padding:22px 20px;display:flex;flex-direction:column;gap:24px;position:sticky;top:0;height:100vh;height:100dvh;overflow:hidden}
 .brand{display:flex;gap:11px;align-items:center}
 .brand svg{flex:none}
 .brand .bn{font-size:14px;font-weight:680;letter-spacing:.01em}
@@ -294,7 +294,7 @@ button,input{font:inherit;color:inherit}
 .railfoot b{color:var(--mut);font-weight:600}
 
 /* ── main ─────────────────────────────────────────────── */
-main{padding:0 30px;min-width:0;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+main{padding:0 30px;min-width:0;height:100vh;height:100dvh;display:flex;flex-direction:column;overflow:hidden}
 .mhead{display:flex;align-items:baseline;gap:16px;padding:26px 0 10px;flex-wrap:wrap;flex:0 0 auto;background:var(--bg)}
 #body{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding-bottom:8px}
 .mhead h1{font-size:19px;font-weight:680;margin:0;letter-spacing:-.01em}
