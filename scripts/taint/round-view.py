@@ -16,7 +16,8 @@ What it shows
       entries whose audit has not landed -> PENDING.
   (3) TWO TIERS: fleet overview = one card per model (status ring, total
       hits, 0-DAY/N-DAY/confirmed/rejected, class histogram) with the
-      left rail counting vendors; a model card drills into the per-hit
+      left rail scoping vendors (a dropdown like the filters, so the rail
+      never grows with vendor count); a model card drills into the per-hit
       ledger (cards with class/rc/marker/graded-ts, filtered by
       novelty/status/attribution/class), and a card opens the full audit
       (dimensions + deterministic finality + novelty queries) plus the
@@ -247,7 +248,7 @@ button,input{font:inherit;color:inherit}
 .cs-btn .ca{flex:none;width:7px;height:7px;border-right:1.5px solid var(--mut);border-bottom:1.5px solid var(--mut);transform:translateY(-2px) rotate(45deg);transition:transform .18s}
 .cs-btn[aria-expanded="true"]{border-color:var(--accent)}
 .cs-btn[aria-expanded="true"] .ca{transform:translateY(1px) rotate(225deg)}
-.cs-list{position:absolute;left:0;right:0;top:calc(100% + 6px);z-index:25;background:var(--surface2);border:1px solid var(--line);border-radius:11px;padding:4px;box-shadow:var(--shadow);animation:pop .16s cubic-bezier(.33,1,.6,1)}
+.cs-list{position:absolute;left:0;right:0;top:calc(100% + 6px);z-index:25;background:var(--surface2);border:1px solid var(--line);border-radius:11px;padding:4px;box-shadow:var(--shadow);animation:pop .16s cubic-bezier(.33,1,.6,1);max-height:min(56vh,384px);overflow-y:auto}
 @keyframes pop{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
 .cs-list[hidden]{display:none}
 .cs-opt{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;font-size:12.5px;cursor:pointer;color:var(--mut)}
@@ -323,7 +324,7 @@ body.t2 .t1only{display:none!important}
 .mcring .dc i{margin-top:3px}
 .mcinfo{flex:1;min-width:0;display:flex;flex-direction:column;gap:10px}
 .mcov{display:flex;align-items:center;gap:10px}
-.vendo{font-size:10px;font-weight:750;letter-spacing:.22em;text-transform:uppercase;color:var(--accent)}
+.vendo{font-size:10px;font-weight:750;letter-spacing:.22em;text-transform:uppercase;color:var(--accent);overflow-wrap:anywhere}
 .mcarrow{margin-left:auto;color:var(--faint);font-size:15px;transition:transform .14s,color .14s}
 .mcard:hover .mcarrow{color:var(--ink);transform:translate(2px,-2px)}
 .mcinfo h3{margin:-4px 0 0;font:17px var(--mono);font-weight:680;letter-spacing:-.01em;overflow-wrap:anywhere}
@@ -332,21 +333,14 @@ body.t2 .t1only{display:none!important}
 .qpair > div{padding:7px 11px 8px;display:flex;flex-direction:column;min-width:0}
 .qpair > div + div{border-left:1px solid var(--hair)}
 .qstats b{font:16px/1.3 var(--mono);font-weight:700}
-.qstats label{font-size:8.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--faint)}
+.qstats label{font-size:8.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--faint);overflow-wrap:anywhere}
 .mcc{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
 .mcc .chip{border:1px solid var(--line);border-radius:6px;padding:0 8px;font:10.5px var(--mono);color:var(--mut);letter-spacing:.06em}
 .mcc .chip b{color:var(--ink);font-weight:650}
 .mcc .chip.dim{opacity:.65}
 .mcc .mut{font:10.5px var(--mono);color:var(--faint);margin-left:auto}
 .qstats .zero{opacity:.4}
-.vlist{display:flex;flex-direction:column;gap:2px;margin-top:2px}
-.vrow{display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid transparent;border-radius:10px;cursor:pointer;color:var(--mut);transition:background .12s,color .12s,border-color .12s}
-.vrow:hover{background:var(--surface2);color:var(--ink)}
-.vrow.sel{background:var(--bg);border-color:var(--line);color:var(--ink)}
-.vrow .vname{font-size:12px;font-weight:680;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.vrow .vbar{flex:1;height:3px;border-radius:2px;background:var(--surface2);overflow:hidden;min-width:14px;max-width:60px}
-.vrow .vbar i{display:block;height:100%;background:var(--accent);border-radius:2px}
-.vrow b{margin-left:auto;font:12px var(--mono);color:var(--ink)}
+/* vendor dropdown uses the shared .cs-btn/.cs-list/.cs-opt set above */
 
 .card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 17px 14px;cursor:pointer;min-width:0;transition:transform .12s ease,border-color .12s,box-shadow .12s;display:flex;flex-direction:column;gap:10px}
 .card:hover{transform:translateY(-2px);border-color:var(--faint);box-shadow:var(--shadow)}
@@ -449,8 +443,7 @@ pre.qs{margin:0;padding:12px 14px;background:var(--bg);border:1px solid var(--li
       <div><div class="bn">Round Vault</div><div class="bs">agent-scan ledger</div></div>
     </div>
     <div class="t1only">
-      <div class="fl"><label>Vendors</label></div>
-      <div id="vlist" class="vlist"></div>
+      <div class="fl"><label for="cs-vendor">Vendors</label><div class="cs" id="cs-vendor"></div></div>
     </div>
     <div class="t2only">
       <div class="search">
@@ -571,6 +564,9 @@ function initFilters(){
   SEL.truth = listbox("cs-truth", [{v:"",n:"All"},{v:"CONFIRMED",n:"Confirmed"},{v:"REJECTED",n:"Rejected"}], v=>{F.truth=v;renderView();});
   SEL.attr = listbox("cs-attr", [{v:"",n:"All"},{v:"TOKEN",n:"TOKEN"},{v:"WINDOW",n:"WINDOW"}], v=>{F.attr=v;renderView();});
   SEL.cls = listbox("cs-cls", [{v:"",n:"All"}], v=>{F.cls=v;renderView();});
+  /* tier-1 vendor scope rides the same listbox as the filters — the old
+     always-open row list grew with every vendor and squeezed the rings */
+  SEL.vendor = listbox("cs-vendor", [{v:"",n:"All vendors"}], v=>{VS=v;renderView();});
   $("#q").oninput=e=>{F.q=e.target.value.toLowerCase();renderView();};
   $("#reset").onclick=()=>{F={nov:"",truth:"",attr:"",cls:"",q:""};
     SEL.nov.set("");SEL.truth.set("");SEL.attr.set("");SEL.cls.set("");$("#q").value="";renderView();};
@@ -755,11 +751,8 @@ function renderTier1(){
   const nm=models(H).length,nv=new Set(H.map(h=>h.vendor)).size;
   $("#cnt").textContent=`${H.length} entries · ${nm} model${nm===1?"":"s"} · ${nv} vendor${nv===1?"":"s"}`;
   const vs=[...new Set(H.map(h=>h.vendor))].sort();
-  $("#vlist").innerHTML=
-    `<div class="vrow${VS?"":" sel"}" data-v=""><span class="vname">All vendors</span><span class="vbar"><i style="width:100%"></i></span><b>${H.length}</b></div>`+
-    vs.map(v=>{const n=H.filter(h=>h.vendor===v).length,p=H.length?Math.round(100*n/H.length):0;
-      return `<div class="vrow${VS===v?" sel":""}" data-v="${esc(v)}"><span class="vname">${esc(v)}</span><span class="vbar"><i style="width:${Math.max(p,4)}%"></i></span><b>${n}</b></div>`;}).join("");
-  $$("#vlist .vrow").forEach(r=>r.onclick=()=>{VS=r.dataset.v;renderView();});
+  SEL.vendor.rebuild([{v:"",n:"All vendors · "+H.length}].concat(
+    vs.map(v=>({v:v, n:v+" · "+H.filter(h=>h.vendor===v).length}))));
   stat(scoped);
   let out="";
   const byV=[];
