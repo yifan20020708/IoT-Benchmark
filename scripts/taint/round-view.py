@@ -666,12 +666,17 @@ function fmtDate(ts){
   return `${m[3]} ${MO[+m[2]-1]} ’${m[1].slice(2)}`;
 }
 function clsShort(c){c=c||"";return /stack|overflow|bof/.test(c)?"BOF":/command|injection|ci/.test(c)?"CI":/denial|service/.test(c)?"DoS":c.toUpperCase();}
+/* repro surface exists ONLY where it means something: a confirmed novel
+   finding worth submitting. Everything else (REJECTED / N-DAY / PENDING)
+   gets no Repro tab, no pane, no card badge — an always-present empty
+   "not replayed yet" reads like a defect, not a state. */
+function hasRepro(h){return h.truth==="CONFIRMED"&&h.novelty==="0-DAY";}
 function card(h,i){
   const dot = h.truth==="CONFIRMED"?"ok":h.truth==="REJECTED"?"bad":"pend";
   const stTxt = h.truth==="CONFIRMED"?"Confirmed":h.truth==="REJECTED"?"Rejected":"—";
   return `<article class="card" tabindex="0" data-i="${i}" aria-label="${esc(h.poc)}">
     <div class="ctop"><span class="st"><span class="dot ${dot}"></span>${esc(stTxt)}</span>
-      ${h.repro_state==="done"?`<span class="rp" title="reproduction pack landed — replay video, serial logs and REPRO.md in the Repro tab">repro</span>`:""}
+      ${hasRepro(h)&&h.repro_state==="done"?`<span class="rp" title="reproduction pack landed — replay video, serial logs and REPRO.md in the Repro tab">repro</span>`:""}
       <span class="nv ${h.novelty==="N-DAY"?"nday":"day"}">${esc(h.novelty)}</span></div>
     <h4>${esc(h.poc)}</h4>
     <div class="un">${esc(h.unit)}</div>
@@ -699,7 +704,9 @@ function models(list){
     const d=(h.graded_at||"").replace(/\D/g,"").slice(0,8);
     if(d){if(!e.lo||d<e.lo)e.lo=d; if(!e.hi||d>e.hi)e.hi=d;}
   }
-  return [...m.values()].sort((a,b)=>b.n-a.n||a.vendor.localeCompare(b.vendor)||a.model.localeCompare(b.model));
+  /* catalog order — vendor alphabetical, then model alphabetical; the
+     grid never reshuffles as new hits land (fixed desk, not a ranking) */
+  return [...m.values()].sort((a,b)=>a.vendor.localeCompare(b.vendor)||a.model.localeCompare(b.model));
 }
 function mcard(m,i){
   const chips=[...["CI","BOF","DoS"].filter(c=>m.cls[c]).map(c=>`<span class="chip">${c} <b>${m.cls[c]}</b></span>`),
@@ -830,7 +837,7 @@ function openDrawer(i){
   const vurl = esc(h.vpath)+"/repro/repro.mp4";
   const vb = (h.repro_video||{}).bytes||0, vs = (h.repro_video||{}).sha256||"";
   const fl = Object.entries(h.repro_files||{});
-  $("#pane-repro").innerHTML = h.repro_state==="done" ? `
+  $("#pane-repro").innerHTML = hasRepro(h) ? (h.repro_state==="done" ? `
     <div class="sec"><h5>Reproduction video — this live replay (attack window 1:1 real time)</h5>
       <video controls preload="metadata" style="width:100%;max-height:430px;background:#000;border:1px solid var(--line)" src="${vurl}"></video>
       <p class="shacap"><a href="${vurl}" download>download repro.mp4</a> · ${(vb/1048576).toFixed(2)} MB · sha256 <b>${esc(vs.slice(0,16))}…</b> · <a href="${esc(h.vpath)}/repro/repro.srt" download>subtitles repro.srt</a></p></div>
@@ -844,7 +851,8 @@ function openDrawer(i){
     : h.repro_state==="missed-replay" ? `
     <div class="sec"><h5>Repro — missed-replay (no video)</h5>
       <p>The live replay did not reproduce the vaulted verdict class. Per the integrity rule the video is <b>REFUSED</b> — never rendered from stale evidence. attempts=${esc(h.repro_attempts)} · at=${esc(h.repro_at||"—")}</p></div>`
-    : `<div class="sec"><h5>Repro</h5><p class="qs">not replayed yet — repro-run.sh has not landed for this entry.</p></div>`;
+    : `<div class="sec"><h5>Repro</h5><p class="qs">not replayed yet — repro-run.sh has not landed for this entry.</p></div>`) : "";
+  $("#dTabs button[data-t=repro]").hidden = !hasRepro(h);
   switchTab("audit");
   $("#scrim").classList.add("open"); $("#drawer").classList.add("open");
   $(".dbody").scrollTop=0;
