@@ -159,6 +159,12 @@ depends on an earlier poc's side effects must be self-contained (send its
 own setter requests first; that is legitimate and exactly what the storage
 channel is for).
 
+`poc-run` kills your poc at 120s (exit 124 = not_triggered). The archive is
+re-graded under that same budget, but on a pristine boot — while your box
+has been up for tens of minutes. Whatever your warm box already did (lazy
+keygen, sessions, settled services) your poc must redo there, inside the
+same 120s. Before archiving, reboot (`emu stop; emu debug`) and poc-run once.
+
 One handler often hides MULTIPLE bugs: sweep every source×field and
 every getter×key combination, and don't stop after the first rc=0 —
 exhaust the function.
