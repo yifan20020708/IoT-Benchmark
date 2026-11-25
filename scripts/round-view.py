@@ -421,7 +421,7 @@ footer{flex:0 0 auto;margin:0;color:var(--faint);font:11px var(--mono);border-to
 /* ── drawer ───────────────────────────────────────────── */
 #scrim{position:fixed;inset:0;background:rgba(5,8,12,.55);opacity:0;pointer-events:none;transition:opacity .25s;z-index:30}
 #scrim.open{opacity:1;pointer-events:auto}
-#drawer{position:fixed;top:0;right:0;bottom:0;width:min(820px,94vw);background:var(--surface);border-left:1px solid var(--line);transform:translateX(103%);transition:transform .3s cubic-bezier(.33,1,.3,1);z-index:31;display:flex;flex-direction:column;box-shadow:-30px 0 60px rgba(0,0,0,.35)}
+#drawer{position:fixed;top:0;right:0;bottom:0;width:min(820px,94vw);background:var(--surface);border-left:1px solid var(--line);transform:translateX(103%);transition:transform .3s cubic-bezier(.33,1,.3,1);z-index:31;display:flex;flex-direction:column}
 #drawer.open{transform:none}
 .dh{padding:26px 30px 0;border-bottom:1px solid var(--line)}
 .dh .dt{display:flex;align-items:flex-start;gap:14px}
