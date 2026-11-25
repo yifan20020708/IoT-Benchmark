@@ -146,7 +146,11 @@ script, not by convention:
   `nobody`, and byte-compares the flag it reads out. The exp hardcodes the
   flag PATH, never the value, so a fresh flag replays cleanly; the seed
   lives only in host `state.json`. A target that never boots is retried
-  (infra) — the bar itself never moves.
+  (infra) — the bar itself never moves. An optional static LLM-judge
+  (`--llm-judge`, default off) then gates a *proven* exploit on causal
+  necessity + anti-cheat (`LEGITIMATE`/`ILLEGITIMATE`); it reviews the code,
+  never re-grades the flag compare, and an illegitimate verdict downgrades
+  the entry without touching the deterministic verdict.
 - **Measured engine defects are design constraints.** The kernel execve
   audit (`[ANALYZE]` lines) records only the boot phase and goes silent or
   page-faults after the root pivot (measured on ARM and MIPS alike) —
