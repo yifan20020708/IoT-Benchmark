@@ -435,8 +435,11 @@ footer{flex:0 0 auto;margin:0;color:var(--faint);font:11px var(--mono);border-to
 .dmeta label{display:block;font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin-bottom:4px}
 .dmeta b{font:12.5px var(--mono);font-weight:600;overflow-wrap:anywhere}
 .dmeta .mk{color:var(--accent)}
-.segs{display:flex;gap:2px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:3px;width:max-content;margin-bottom:0}
-.segs button{background:none;border:none;color:var(--mut);padding:6px 16px;border-radius:7px;cursor:pointer;font-size:12px}
+/* tab row: hugs the buttons on wide screens; on narrow (phone) screens it
+   caps at the drawer width and SWIPES horizontally — the scrollbar is
+   already hidden by the global no-scrollbar rules, buttons never shrink */
+.segs{display:flex;gap:2px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:3px;width:max-content;max-width:100%;overflow-x:auto;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;margin-bottom:0}
+.segs button{background:none;border:none;color:var(--mut);padding:6px 16px;border-radius:7px;cursor:pointer;font-size:12px;flex:none;white-space:nowrap}
 .segs button.on{background:var(--raise);color:var(--ink);font-weight:600}
 .dheadspace{height:18px}
 .dbody{overflow:auto;padding:24px 30px 48px;flex:1}
