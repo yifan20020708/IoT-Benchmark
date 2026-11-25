@@ -1,15 +1,16 @@
 # agent-scan
 
-Turn stock IoT firmware into **verified emulations**, then let autonomous
-agents **hunt vulnerabilities in them** — with every verdict produced by a
-deterministic grader that needs neither a human nor an LLM. Two stages, one
-repo, one direction of trust: agents may claim anything, the harness
-re-checks everything.
+Turn stock IoT firmware into **verified emulations**, let autonomous
+agents **hunt vulnerabilities in them**, then **turn each proven PoC into a
+working exploit** — with every verdict produced by a deterministic grader
+that needs neither a human nor an LLM. Three stages, one repo, one direction
+of trust: agents may claim anything, the harness re-checks everything.
 
 | stage | directory | input | output |
 |---|---|---|---|
 | **rehost** | `scripts/rehost/` | stock vendor firmware | `task-<id>:solved` — one-click-bootable emulation images |
 | **taint** | `scripts/taint/` | a `:solved` image | `data/round/` — the findings vault: PoC + evidence + report per hit |
+| **exploit** | `scripts/exploit/` | a vault PoC + its `:solved` image | `<entry>/exploit/` — working exp + writeup + flag-compare verdict per PoC |
 
 Each stage has its own README with full detail; this one is the umbrella.
 
@@ -85,11 +86,39 @@ Each stage has its own README with full detail; this one is the umbrella.
 │    round-view.py → one self-contained HTML ledger                    │
 │      (--serve PORT: live — hits land on the page alone)              │
 └──────────────────────────────────────────────────────────────────────┘
+             │
+             │    exploit-run.sh / exploit-batch.sh --jobs N
+             ▼    (one vault PoC per worker)
+╔═════════════════ EXPLOIT — turn the PoC into RCE ════════════════════╗
+║  One :solved image derives TWO containers joined by a shared         ║
+║  volume — the only agent↔target channel:                             ║
+║    target · flag injected into the guest disk · boots RUN mode       ║
+║             (no backdoor) · the exp runs dropped to nobody           ║
+║    agent  · vault PoC + REPORT + decompile · writes the exp ·        ║
+║             may boot a local flag-less copy to debug                 ║
+║              │                                                       ║
+║              ▼                                                       ║
+║  GRADE    LLM-free: a FRESH target + FRESH random flag per           ║
+║           attempt · the exp reads the flag by PATH, never the        ║
+║           value · byte-compare ⇒ EXPLOITED / NOT_EXPLOITED ·         ║
+║           infra-scoped boot retry, never a goalpost move             ║
+║              │                                                       ║
+║              ▼                                                       ║
+║  ARCHIVE  every outcome → <entry>/exploit/: writeup.md (exploit      ║
+║           writeup, or an honest gap report) + grade-result.json      ║
+║           + evidence/ · the working exp too on EXPLOITED             ║
+╚════════════╤═════════════════════════════════════════════════════════╝
+             │
+             ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  <entry>/exploit/   ·   back into the vault entry                    │
+│    exp (on EXPLOITED) · writeup.md · grade-result.json · evidence/   │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ## The contracts
 
-The design rules that hold across both stages — each is enforced by a
+The design rules that hold across all three stages — each is enforced by a
 script, not by convention:
 
 - **The grader is deterministic and LLM-free.** The final scoring standard
@@ -111,6 +140,13 @@ script, not by convention:
   `verify-run.sh` creates per poc). And FirmAE's "reboot" interception is
   an in-place init restart — no second kernel banner ever appears — so
   window attribution, never banners, is the only truth.
+- **The exploit verdict is a flag compare, LLM-free.** `exploit-run.sh
+  grade` boots a FRESH target with a FRESH random flag
+  (`flag{HMAC-SHA256(seed, run_id)[:32]}`), runs the exp dropped to
+  `nobody`, and byte-compares the flag it reads out. The exp hardcodes the
+  flag PATH, never the value, so a fresh flag replays cleanly; the seed
+  lives only in host `state.json`. A target that never boots is retried
+  (infra) — the bar itself never moves.
 - **Measured engine defects are design constraints.** The kernel execve
   audit (`[ANALYZE]` lines) records only the boot phase and goes silent or
   page-faults after the root pivot (measured on ARM and MIPS alike) —
@@ -131,9 +167,11 @@ agent-scan/
     round-view.py         the vault dashboard — cross-stage read layer
     rehost/               stage 1 — collect, rehost, solved lifecycle
     taint/                stage 2 — mapper, hunt, verify, vault
+    exploit/              stage 3 — PoC → working exp, flag-compare grade
   data/                   gitignored — all generated state
     firmware/<vendor>/<model>/    task inputs (written by stage 1's collect)
     round/<vendor>/<model>/       the findings vault (+ dashboard.html)
+    exploit/<vendor>/<model>/     stage-3 process files (state.json w/ seed)
   deps/                   gitignored — pinned FirmAE-pro + Ghidra release
   .env                    gitignored — LLM credentials (template: .env.example)
 ```
@@ -181,7 +219,13 @@ bash scripts/taint/verify-run.sh data/firmware/tenda/W30EV2.0 bin__httpd__formSe
 bash scripts/taint/hunt-batch.sh --parallel 2 --timeout 3600 data/firmware/tenda/W30EV2.0
 bash scripts/taint/hunt-batch-monitor.sh data/firmware/tenda/W30EV2.0
 
-# 5 — the vault as one self-contained page
+# 5 — exploit (stage 3): PoC → working exp, graded on a fresh target + flag
+bash scripts/exploit/exploit-run.sh run --timeout 3600 \
+    --image task-tenda__w30ev2.0:solved --entry data/round/tenda/W30EV2.0/<poc-entry>
+bash scripts/exploit/exploit-batch.sh --jobs 8 --timeout 28800 data/round
+bash scripts/exploit/exploit-batch-monitor.sh data/round    # live view
+
+# 6 — the vault as one self-contained page
 python3 scripts/round-view.py                 # data/round/dashboard.html
 python3 scripts/round-view.py --serve 8080    # live: hits appear by themselves
 ```
@@ -194,8 +238,9 @@ docker exec <ctr> poc-run /work/poc/whatever.py; echo rc=$?  # grade one poc
 ```
 
 Timing reality: a rehost task runs minutes-to-hours under TCG (budget
-1–4 h); a hunt unit's default budget is 1 h; verify costs one TCG boot
-(~1 core) per archived poc, parallelized.
+1–4 h); a hunt unit's default budget is 1 h; an exploit agent's is 1 h
+(batch 8 h); verify and grade each cost one TCG boot (~1 core) per
+attempt, parallelized.
 
 ## Data layout
 
@@ -215,6 +260,12 @@ data/round/<vendor>/<model>/<poc-stem>-<graded-ts>/
   REPORT.md + AUDIT.json        static-only report agent output; the
                                 archiver extends AUDIT.json with the
                                 deterministic finality + derived confidence
+  exploit/                      stage-3 archive: exp (on EXPLOITED) +
+                                writeup.md + grade-result.json + evidence/
+
+data/exploit/<vendor>/<model>/<entry-name>/
+  state.json                    HOST secret: seed + expected_flag (gitignored)
+  agent/ + exec/ + grade/       exp source, dev feedback, every grade attempt
 ```
 
 ## The dashboard
@@ -264,3 +315,5 @@ it.
   contract, loop-device parallel safety, solved-image layout.
 - `scripts/taint/README.md` — the poc-run exit-code oracle, grading
   protocol, mapper/hunt work-folder contracts, the vault.
+- `scripts/exploit/README.md` — the two-container flag mailbox, the
+  fresh-flag compare oracle, anti-cheat hardening, batch & monitor.
