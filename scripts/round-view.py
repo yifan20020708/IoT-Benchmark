@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""agent-scan :: taint — round-view: one static HTML ledger over data/round
+"""agent-scan — round-view: one static HTML ledger over data/round
+
+Cross-stage read layer (rehost / taint / exploit) — lives at scripts/
+top level, not inside any one stage.
 
 Usage: round-view.py [--out PATH] [--root data/round]
        round-view.py --serve PORT [--org NAME --password PW]   (login gate)
@@ -33,7 +36,7 @@ import argparse, datetime, glob, hashlib, html, json, os, re, sys
 
 TRUTH = {"high": "CONFIRMED", "medium": "CONFIRMED", "low": "REJECTED"}
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
+REPO = os.path.abspath(os.path.join(HERE, ".."))
 
 def sub(dct, key):
     v = dct.get(key) if isinstance(dct, dict) else None
@@ -490,7 +493,7 @@ pre.qs{margin:0;padding:12px 14px;background:var(--bg);border:1px solid var(--li
       </div>
     </div>
     <div id="body"></div>
-    <footer>scripts/taint/round-view.py · data/round · one poc, one fresh boot, one deterministic verdict — __GEN__</footer>
+    <footer>scripts/round-view.py · data/round · one poc, one fresh boot, one deterministic verdict — __GEN__</footer>
   </main>
 </div>
 

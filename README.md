@@ -128,8 +128,9 @@ agent-scan/
   scripts/
     Dockerfile.base       firmae-base image definition (built once)
     Dockerfile.task       per-task raw image definition
+    round-view.py         the vault dashboard — cross-stage read layer
     rehost/               stage 1 — collect, rehost, solved lifecycle
-    taint/                stage 2 — mapper, hunt, verify, vault, dashboard
+    taint/                stage 2 — mapper, hunt, verify, vault
   data/                   gitignored — all generated state
     firmware/<vendor>/<model>/    task inputs (written by stage 1's collect)
     round/<vendor>/<model>/       the findings vault (+ dashboard.html)
@@ -181,8 +182,8 @@ bash scripts/taint/hunt-batch.sh --parallel 2 --timeout 3600 data/firmware/tenda
 bash scripts/taint/hunt-batch-monitor.sh data/firmware/tenda/W30EV2.0
 
 # 5 — the vault as one self-contained page
-python3 scripts/taint/round-view.py                 # data/round/dashboard.html
-python3 scripts/taint/round-view.py --serve 8080    # live: hits appear by themselves
+python3 scripts/round-view.py                 # data/round/dashboard.html
+python3 scripts/round-view.py --serve 8080    # live: hits appear by themselves
 ```
 
 Lab mode and hand grading (a solved image is a normal docker container):
@@ -216,9 +217,50 @@ data/round/<vendor>/<model>/<poc-stem>-<graded-ts>/
                                 deterministic finality + derived confidence
 ```
 
+## The dashboard
+
+`scripts/round-view.py` is the vault's read layer — one self-contained
+HTML ledger over ALL of `data/round` (deterministic, stdlib-only, zero
+external requests — inline CSS/JS/markdown-renderer, works from `file://`;
+the embedded template lives in the script — no side-car assets). It sits
+at the scripts top level because it is the cross-stage display surface
+(rehost / taint / exploit), not a tool of any one stage.
+
+Security-desk layout, TWO TIERS routed on `#/v/<vendor>/m/<model>`:
+tier 1 = fleet overview (vendor dropdown rail, the two ratio rings and
+direct CONFIRMED∩0-DAY / CONFIRMED∩N-DAY cross-counts with per-class
+CI/BOF/DoS tallies — the one-dim rings cannot express the intersection;
+one card per model — status ratio ring with the total in the hub, paired
+0-DAY|N-DAY and CONFIRMED|REJECTED stat boxes, class chips, handler
+count); tier 2 = that model's hit ledger (search + listbox filters
+Novelty/Status/Attribution/Class; cards carry status dot, class, flow
+chip direct/cross, novelty with unverified-CVE flag, TOKEN/WINDOW,
+marker, graded date). The right drawer holds a meta grid (verdict ·
+finality · status · confidence · novelty · marker · class · flow ·
+graded) and tabs *Evidence audit · PoC · Report · Repro* — the entry's
+full REPORT.md, AUDIT.json dimensions and exact poc bytes embedded; the
+Repro tab (CONFIRMED ∩ 0-DAY entries only) plays the live-replay video
+inline with a download link (bytes + sha256 shown), the repro.json
+machine facts, the decisive serial lines verbatim, the full downloadable
+attachment manifest and the rendered REPRO.md. Status is CONFIRMED /
+REJECTED only: high|medium ⇒ CONFIRMED, low ⇒ REJECTED (confidence
+grades the attribution chain, never reality).
+
+Plain run rebuilds `<root>/dashboard.html` atomically (snapshot — re-run
+after new hits); `--serve PORT` serves it LIVE: every request rescans
+the vault and the page polls `/__data__` (state-hash ts) every 4 s, so a
+landing hit appears by itself and the ratio rings animate as it does. A
+LOGIN GATE fronts every request — one fixed organization credential pair
+(`--org`/`--password`, defaults `netsec`/`netsecpassword`, env
+`ROUND_VIEW_ORG`/`ROUND_VIEW_PASSWORD`), no registration: the sign-in
+page renders in the ledger's own design tokens, a successful POST buys
+an HttpOnly SameSite=Strict cookie session (7 days), deep-link hashes
+survive the gate, and a `sign out` header link (live mode only) clears
+it.
+
 ## The stage READMEs
 
 - `scripts/rehost/README.md` — image tiers, the hverify 2-mode verdict
   contract, loop-device parallel safety, solved-image layout.
 - `scripts/taint/README.md` — the poc-run exit-code oracle, grading
-  protocol, mapper/hunt work-folder contracts, the vault and round-view.
+  protocol, mapper/hunt work-folder contracts, the vault.
