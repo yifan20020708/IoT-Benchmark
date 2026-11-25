@@ -2,6 +2,7 @@
 """agent-scan :: taint — round-view: one static HTML ledger over data/round
 
 Usage: round-view.py [--out PATH] [--root data/round]
+       round-view.py --serve PORT [--org NAME --password PW]   (login gate)
 
 Deterministic, stdlib-only, ZERO network dependencies (all CSS/JS inline —
 no CDN, no webfont: this host's egress is restricted and a dashboard that
@@ -302,8 +303,9 @@ main{padding:0 30px;min-width:0;height:100vh;height:100dvh;display:flex;flex-dir
 .live{display:inline-flex;align-items:center;gap:6px}
 .live s{width:7px;height:7px;border-radius:50%;background:var(--ok);text-decoration:none;animation:pulse 2.4s ease-in-out infinite}
 @keyframes pulse{50%{opacity:.3}}
-#thm{background:var(--surface);border:1px solid var(--line);color:var(--mut);border-radius:8px;padding:4px 10px;font-size:11px;cursor:pointer}
-#thm:hover{color:var(--ink)}
+#thm,#out{background:var(--surface);border:1px solid var(--line);color:var(--mut);border-radius:8px;padding:4px 10px;font-size:11px;cursor:pointer}
+#thm:hover,#out:hover{color:var(--ink)}
+#out{text-decoration:none}
 
 .vhead{display:flex;align-items:baseline;gap:12px;margin:30px 0 4px;padding-bottom:10px;border-bottom:1px solid var(--line)}
 .vhead h2{margin:0;font-size:13px;font-weight:750;letter-spacing:.22em;text-transform:uppercase;color:var(--accent)}
@@ -484,6 +486,7 @@ pre.qs{margin:0;padding:12px 14px;background:var(--bg);border:1px solid var(--li
         <span id="cnt"></span>
         <span class="live" id="live" hidden><s></s>live</span>
         <button id="thm">theme</button>
+        <a id="out" href="/logout" hidden>sign out</a>
       </div>
     </div>
     <div id="body"></div>
@@ -861,9 +864,11 @@ function switchTab(t){
 /* ── live polling ─────────────────────────────────────── */
 if(location.protocol.startsWith("http")){
   $("#live").hidden=false;
+  $("#out").hidden=false;
   setInterval(async()=>{
     try{
       const r = await fetch("/__data__", {cache:"no-store"});
+      if(r.status===401){location.reload();return;}   /* session gone → the login gate */
       const j = await r.json();
       if(j.ts !== DATA_TS){
         const grew = j.hits.length > H.length;
@@ -954,17 +959,180 @@ def build_page(hits, ts):
             .replace("__TOTAL__", str(len(hits)))
             .replace("__DATA__", data))
 
-def serve(root, port, token=None):
+# ── login gate ─────────────────────────────────────────────────────
+# Same design tokens as the ledger (slate + brass, dark-first, light
+# mirrored, system UI + mono, micro-uppercase labels) so the gate reads
+# as the desk's front door, not a different product. One fixed
+# organization credential pair — no registration, no user store.
+LOGIN = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · Round Vault</title>
+<style>
+:root{
+  --bg:#0c1016; --surface:#10161f; --surface2:#161e2a; --raise:#1c2636;
+  --line:#232e3f; --hair:#1a2330;
+  --ink:#dce3ee; --mut:#8f9bb0; --faint:#5c6779;
+  --accent:#d9a441; --accent-soft:rgba(217,164,65,.14); --accent-ink:#1a1206;
+  --ok:#5cb98c; --bad:#d2566b; --sky:#6d9fd4;
+  --shadow:0 14px 34px rgba(0,0,0,.38);
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --bg:#f4f6f9; --surface:#ffffff; --surface2:#eef1f6; --raise:#e6ebf2;
+    --line:#d9dfe9; --hair:#e8edf4;
+    --ink:#1a2330; --mut:#5a6679; --faint:#8b95a7;
+    --accent:#8a6110; --accent-soft:rgba(138,97,16,.12); --accent-ink:#ffffff;
+    --ok:#1e7a4d; --bad:#b23a52; --sky:#33689f;
+    --shadow:0 14px 34px rgba(30,42,64,.14);
+    color-scheme:light;
+  }
+}
+:root[data-theme="light"]{
+  --bg:#f4f6f9; --surface:#ffffff; --surface2:#eef1f6; --raise:#e6ebf2;
+  --line:#d9dfe9; --hair:#e8edf4;
+  --ink:#1a2330; --mut:#5a6679; --faint:#8b95a7;
+  --accent:#8a6110; --accent-soft:rgba(138,97,16,.12); --accent-ink:#ffffff;
+  --ok:#1e7a4d; --bad:#b23a52; --sky:#33689f;
+  --shadow:0 14px 34px rgba(30,42,64,.14);
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--ink);font:13.5px/1.55 var(--sans);
+  font-variant-numeric:tabular-nums;display:grid;place-items:center;padding:16px;overflow:hidden}
+/* ambient desk light: two soft glows + a hairline grid fading out from the card */
+body::before{content:"";position:fixed;inset:0;pointer-events:none;background:
+  radial-gradient(560px 380px at 16% -8%,var(--accent-soft),transparent 70%),
+  radial-gradient(640px 440px at 88% 110%,color-mix(in srgb,var(--sky) 8%,transparent),transparent 70%)}
+body::after{content:"";position:fixed;inset:0;pointer-events:none;opacity:.55;
+  background-image:linear-gradient(var(--hair) 1px,transparent 1px),
+    linear-gradient(90deg,var(--hair) 1px,transparent 1px);
+  background-size:44px 44px;
+  -webkit-mask-image:radial-gradient(760px 540px at 50% 44%,#000 0%,transparent 76%);
+  mask-image:radial-gradient(760px 540px at 50% 44%,#000 0%,transparent 76%)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:1px;border-radius:6px}
+::selection{background:var(--accent-soft)}
+.gate{position:relative;z-index:1;width:min(400px,100%);
+  background:linear-gradient(165deg,var(--surface2),var(--surface));
+  border:1px solid var(--line);border-radius:18px;padding:34px 32px 26px;
+  box-shadow:var(--shadow);animation:rise .5s cubic-bezier(.33,1,.6,1)}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.gate.err{animation:shake .4s cubic-bezier(.36,.07,.19,.97)}
+@keyframes shake{10%,90%{transform:translateX(-2px)}20%,80%{transform:translateX(4px)}
+  30%,50%,70%{transform:translateX(-6px)}40%,60%{transform:translateX(6px)}}
+.brand{display:flex;flex-direction:column;align-items:center;gap:12px;text-align:center}
+.tile{width:52px;height:52px;border-radius:14px;display:grid;place-items:center;
+  background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 30%,transparent)}
+.bn{font-size:17px;font-weight:680;letter-spacing:.01em}
+.bs{font:9.5px var(--mono);color:var(--faint);letter-spacing:.18em;text-transform:uppercase;margin-top:3px}
+form{margin-top:26px;display:flex;flex-direction:column;gap:15px}
+.fl label{display:block;font-size:10px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--faint);margin-bottom:6px}
+.inp{position:relative}
+input{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:9px;
+  padding:10px 12px;font:13px var(--mono);color:var(--ink);
+  transition:border-color .15s,box-shadow .15s}
+input::placeholder{color:var(--faint);font-family:var(--sans);font-size:12.5px}
+input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+#pw{padding-right:42px}
+.eye{position:absolute;right:5px;top:50%;transform:translateY(-50%);background:none;border:none;
+  color:var(--faint);cursor:pointer;padding:7px;border-radius:7px;display:grid;place-items:center}
+.eye:hover{color:var(--ink);background:var(--raise)}
+.errbox{display:flex;gap:9px;align-items:center;
+  background:color-mix(in srgb,var(--bad) 10%,transparent);
+  border:1px solid color-mix(in srgb,var(--bad) 38%,transparent);color:var(--bad);
+  border-radius:9px;padding:8px 12px;font-size:12px}
+.errbox svg{flex:none}
+.go{margin-top:4px;width:100%;background:var(--accent);color:var(--accent-ink);border:none;
+  border-radius:9px;padding:11px 14px;font-size:13.5px;font-weight:650;letter-spacing:.02em;
+  cursor:pointer;transition:filter .15s,transform .12s}
+.go:hover{filter:brightness(1.08);transform:translateY(-1px)}
+.go:active{transform:none}
+.go:disabled{opacity:.6;cursor:default;transform:none;filter:none}
+.motto{margin-top:22px;text-align:center;font:10px var(--mono);color:var(--faint);letter-spacing:.04em}
+@media (max-width:420px){.gate{padding:28px 22px 22px}}
+@media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<main class="gate__ERRCLASS__">
+  <div class="brand">
+    <div class="tile">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.6"><path d="M12 2l8 4v6c0 5-3.5 8.4-8 10-4.5-1.6-8-5-8-10V6l8-4z"/><path d="M8.5 12.2l2.3 2.3 4.7-4.8" stroke="var(--ok)"/></svg>
+    </div>
+    <div><div class="bn">Round Vault</div><div class="bs">agent-scan ledger</div></div>
+  </div>
+  <form method="post" action="/login" id="f">
+    __ERRBOX__
+    <div class="fl"><label for="org">Organization</label>
+      <input id="org" name="org" type="text" value="__ORG__" placeholder="your organization"
+        autocomplete="organization" autocapitalize="off" spellcheck="false" __AF_ORG__></div>
+    <div class="fl"><label for="pw">Password</label>
+      <div class="inp"><input id="pw" name="password" type="password" placeholder="shared lab password"
+        autocomplete="current-password" __AF_PW__>
+      <button class="eye" type="button" id="eye" title="show password" aria-label="show password"></button></div></div>
+    <input type="hidden" name="next" id="next" value="__NEXT__">
+    <button class="go" type="submit" id="go">Sign in</button>
+  </form>
+  <div class="motto">one poc · one fresh boot · one deterministic verdict</div>
+</main>
+<script>
+"use strict";
+/* the ledger's theme toggle persists here too — same origin, same key */
+try{const t=localStorage.getItem("rv-theme");if(t)document.documentElement.dataset.theme=t;}catch(e){}
+/* the gate is served IN PLACE of the requested page, so the URL still carries
+   its #/v/…/m/… hash — ride it through the login back to the deep link */
+const nx=document.getElementById("next");
+if(location.hash)nx.value=(nx.value||"/")+location.hash;
+const EYE='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYEOFF='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 3l18 18"/><path d="M10.6 5.1A11 11 0 0 1 12 5c6.5 0 10 7 10 7a17.8 17.8 0 0 1-3.1 4.1M6.6 6.6A16.9 16.9 0 0 0 2 12s3.5 7 10 7a10.2 10.2 0 0 0 4.4-1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
+const pw=document.getElementById("pw"),eye=document.getElementById("eye");
+eye.innerHTML=EYE;
+eye.onclick=()=>{const show=pw.type==="password";pw.type=show?"text":"password";
+  eye.innerHTML=show?EYEOFF:EYE;eye.title=show?"hide password":"show password";
+  eye.setAttribute("aria-label",eye.title);pw.focus();};
+document.getElementById("f").addEventListener("submit",()=>{
+  const b=document.getElementById("go");b.disabled=true;b.textContent="Signing in…";});
+</script>
+</body>
+</html>
+"""
+
+def login_page(error=False, org_value="", next_path="/"):
+    errbox = ('<div class="errbox" role="alert">'
+              '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" '
+              'stroke="currentColor" stroke-width="2"><path d="M12 3l10 18H2L12 3z"/>'
+              '<path d="M12 10v4"/><path d="M12 17.4v.6"/></svg>'
+              '<span>Invalid organization or password.</span></div>') if error else ""
+    return (LOGIN
+            .replace("__ERRCLASS__", " err" if error else "")
+            .replace("__ERRBOX__", errbox)
+            .replace("__ORG__", html.escape(org_value, quote=True))
+            .replace("__NEXT__", html.escape(next_path, quote=True))
+            .replace("__AF_ORG__", "" if error else "autofocus")
+            .replace("__AF_PW__", "autofocus" if error else ""))
+
+def safe_next(n):
+    """only same-origin relative paths ride the post-login redirect"""
+    n = (n or "/").strip()
+    if (not n.startswith("/") or n.startswith("//") or "\\" in n
+            or any(ord(c) < 32 for c in n) or len(n) > 2048):
+        return "/"
+    return n
+
+def serve(root, port, org, password):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from http.cookies import SimpleCookie, CookieError
     from urllib.parse import urlparse, parse_qs
-    import secrets
+    import secrets, time
     ROOT_R = os.path.realpath(root)
-    DENIED = ("<!doctype html><meta charset=utf-8><title>401</title>"
-              "<body style=\"font-family:ui-monospace,monospace;padding:2em\">"
-              "<h2>401 — token required</h2>"
-              "<p>Append <code>?token=&lt;TOKEN&gt;</code> to the URL once; "
-              "a cookie keeps the session open.</p></body>")
+    SESSIONS = set()   # live session ids — one per sign-in; logout kills only its own
     TYPES = {".json": "application/json", ".md": "text/plain; charset=utf-8",
              ".py": "text/plain; charset=utf-8", ".c": "text/plain; charset=utf-8",
              ".txt": "text/plain; charset=utf-8", ".log": "text/plain; charset=utf-8",
@@ -983,49 +1151,105 @@ def serve(root, port, token=None):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(data)
+        def _redirect(self, loc, set_cookie=None):
+            self.send_response(303)
+            self.send_header("Location", loc)
+            self.send_header("Content-Length", "0")
+            if set_cookie:
+                self.send_header("Set-Cookie", set_cookie)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+        def _sid(self):
+            try:
+                jar = SimpleCookie(self.headers.get("Cookie") or "")
+            except CookieError:
+                jar = SimpleCookie()
+            m = jar.get("rv_session")
+            return m.value if m else None
+        def _authed(self):
+            s = self._sid()
+            return bool(s and s in SESSIONS)
         def do_GET(self):
-            u = urlparse(self.path)
-            p = u.path
-            grant_cookie = None
-            if token:
-                try:
-                    jar = SimpleCookie(self.headers.get("Cookie") or "")
-                except CookieError:
-                    jar = SimpleCookie()
-                m = jar.get("rv_token")
-                granted = bool(m and m.value == token)
-                if not granted:
-                    q = parse_qs(u.query).get("token") or []
-                    if q and q[0].isascii() and secrets.compare_digest(q[0], token):
-                        granted = True
-                        grant_cookie = ("rv_token=" + token
-                                        + "; Path=/; HttpOnly; SameSite=Strict"
-                                        + "; Max-Age=604800")
-                if not granted:
-                    self._send(401, "text/html; charset=utf-8", DENIED)
-                    return
+            p = urlparse(self.path).path
+            if p == "/logout":
+                s = self._sid()
+                if s:
+                    SESSIONS.discard(s)   # server-side invalidation, this session only
+                self._redirect("/login", "rv_session=; Path=/; HttpOnly; "
+                                         "SameSite=Strict; Max-Age=0")
+                return
+            if p == "/login":
+                if self._authed():
+                    self._redirect("/")
+                else:
+                    self._send(200, "text/html; charset=utf-8", login_page())
+                return
             if p in ("/", "/dashboard.html"):
+                if not self._authed():
+                    # the gate renders IN PLACE — the URL (and its hash) survives
+                    self._send(200, "text/html; charset=utf-8",
+                               login_page(next_path=p))
+                    return
                 hits, ts = payload(root)          # fresh scan per request
-                self._send(200, "text/html; charset=utf-8",
-                           build_page(hits, ts), grant_cookie)
-            elif p == "/__data__":
+                self._send(200, "text/html; charset=utf-8", build_page(hits, ts))
+                return
+            if not self._authed():
+                if p == "/__data__":
+                    self._send(401, "application/json",
+                               '{"error":"sign-in required"}')
+                else:
+                    self._send(401, "text/plain", "401 — sign in at /\n")
+                return
+            if p == "/__data__":
                 hits, ts = payload(root)
                 self._send(200, "application/json",
                            json.dumps({"ts": ts, "hits": hits},
-                                      ensure_ascii=False).replace("</", "<\\/"),
-                           grant_cookie)
-            else:  # raw vault files (evidence etc); no dir listings
-                f = os.path.realpath(os.path.join(ROOT_R, p.lstrip("/")))
-                if f.startswith(ROOT_R + os.sep) and os.path.isfile(f):
-                    self._send(200, TYPES.get(os.path.splitext(f)[1].lower(),
-                                              "application/octet-stream"),
-                               open(f, "rb").read(), grant_cookie)
-                else:
-                    self._send(404, "text/plain", "404\n")
+                                      ensure_ascii=False).replace("</", "<\\/"))
+                return
+            # raw vault files (evidence etc); no dir listings
+            f = os.path.realpath(os.path.join(ROOT_R, p.lstrip("/")))
+            if f.startswith(ROOT_R + os.sep) and os.path.isfile(f):
+                self._send(200, TYPES.get(os.path.splitext(f)[1].lower(),
+                                          "application/octet-stream"),
+                           open(f, "rb").read())
+            else:
+                self._send(404, "text/plain", "404\n")
+        def do_POST(self):
+            if urlparse(self.path).path != "/login":
+                self._send(404, "text/plain", "404\n")
+                return
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                n = 0
+            if n > 65536:
+                self.close_connection = True
+                self._send(413, "text/plain", "413\n")
+                return
+            body = self.rfile.read(n).decode("utf-8", "replace") if n > 0 else ""
+            form = parse_qs(body, keep_blank_values=True)
+            org_f = (form.get("org") or [""])[0]
+            pw_f = (form.get("password") or [""])[0]
+            nxt = safe_next((form.get("next") or ["/"])[0])
+            if self._authed():
+                self._redirect(nxt)
+                return
+            # constant-time on both fields; bytes so any unicode input is safe
+            ok = (secrets.compare_digest(org_f.encode(), org.encode())
+                  & secrets.compare_digest(pw_f.encode(), password.encode()))
+            if ok:
+                sid = secrets.token_urlsafe(32)
+                SESSIONS.add(sid)
+                self._redirect(nxt, "rv_session=" + sid + "; Path=/; HttpOnly; "
+                                    "SameSite=Strict; Max-Age=604800")
+                return
+            time.sleep(0.4)   # fixed cost on failure — slows guessing, locks no one out
+            self._send(200, "text/html; charset=utf-8",
+                       login_page(error=True, org_value=org_f, next_path=nxt))
     srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     print(f"[round-view] LIVE serve http://0.0.0.0:{port}/dashboard.html "
-          f"(root {root}; rescans per request, page polls every 4s"
-          + ("; token-gated" if token else "") + ")", file=sys.stderr)
+          f"(root {root}; rescans per request, page polls every 4s; "
+          f"login gate: organization '{org}')", file=sys.stderr)
     srv.serve_forever()
 
 def main():
@@ -1040,18 +1264,21 @@ def main():
                          "page polls /__data__ every 4s, so new vault entries "
                          "(verify re-run, report agent landing) appear by "
                          "themselves — donuts animate as they land")
-    ap.add_argument("--token", default=os.environ.get("ROUND_VIEW_TOKEN"),
-                    metavar="TOKEN",
-                    help="gate the live serve behind a token: every request "
-                         "needs it — open http://<ip>:<port>/?token=<TOKEN> "
-                         "once and a cookie keeps the session. "
-                         "No effect without --serve.")
+    ap.add_argument("--org", default=os.environ.get("ROUND_VIEW_ORG", "netsec"),
+                    metavar="NAME",
+                    help="login-gate organization name for --serve "
+                         "(default: netsec; env ROUND_VIEW_ORG)")
+    ap.add_argument("--password",
+                    default=os.environ.get("ROUND_VIEW_PASSWORD", "netsecpassword"),
+                    metavar="PW",
+                    help="login-gate password for --serve "
+                         "(default: netsecpassword; env ROUND_VIEW_PASSWORD)")
     a = ap.parse_args()
     if a.serve:
-        if a.token == "":
-            ap.error("--token is empty — refusing to serve unauthenticated "
-                     "(a vanished token file feeds an empty string here)")
-        serve(a.root, a.serve, a.token)
+        if not a.org or not a.password:
+            ap.error("--org/--password must not be empty — refusing to serve "
+                     "an open login gate")
+        serve(a.root, a.serve, a.org, a.password)
         return
     hits, ts = payload(a.root)
     out = a.out or os.path.join(a.root, "dashboard.html")
