@@ -200,6 +200,14 @@ fi
 # unique to this container (path-string collision = cross-container theft)
 # ---------------------------------------------------------------------------
 if [ -n "$fileop" ] && [ "$has_j$has_c" = "00" ]; then
+    # Lock BEFORE the free-slot scan + hardlink: choosing the alias must be
+    # atomic. Two concurrent attaches in the SAME container used to race here
+    # — both pick the same free n, the loser's `ln` fails EEXIST and falls back
+    # to an UNALIASED attach. An unaliased attach records the original
+    # /opt/FirmAE-pro path, identical across containers, re-opening the
+    # cross-corruption (C) the alias exists to kill. Under the lock every
+    # attach gets a unique alias, so the protection holds under concurrency.
+    lock
     alias=""
     n=1
     while [ -e "$ALIAS_DIR/$HOST-$n" ] || [ -e "$ALIAS_DIR/$HOST-$n.map" ]; do
@@ -213,7 +221,6 @@ if [ -n "$fileop" ] && [ "$has_j$has_c" = "00" ]; then
     else
         newargv=("$@")
     fi
-    lock
     out=$("$REAL" "${newargv[@]}" 2>"$ERRF"); rc=$?
     if [ -n "$alias" ]; then
         dev=$("$REAL" -j "$alias" 2>/dev/null | head -1 | cut -d: -f1)
