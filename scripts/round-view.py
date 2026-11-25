@@ -108,6 +108,36 @@ def load_entry(root, vendor, model, ed):
             decisive = open(dp, encoding="utf-8", errors="replace").read()[:8192]
         except Exception:
             decisive = ""
+    # exploit dimension (exploit-run.sh): success = final_status EXPLOITED —
+    # the deterministic fresh-target/fresh-flag capture gated by the
+    # causal-necessity judge (ILLEGITIMATE downgrades to EXPLOITED_ILLEGITIMATE;
+    # NOT_EXPLOITED / BOOT_FAILED are failures). Only successes get a surface:
+    # no tab, no pane, no card tint for anything else.
+    exg = {}
+    try:
+        exg = json.load(open(os.path.join(ed, "exploit", "grade-result.json")))
+    except Exception:
+        exg = {}
+    exg = exg if isinstance(exg, dict) else {}
+    exploited = exg.get("final_status") == "EXPLOITED"
+    exp_src, exp_ext, writeup, exp_facts = "", "", "", {}
+    if exploited:
+        exps = sorted(glob.glob(os.path.join(ed, "exploit", "exp.*")))
+        if exps:
+            exp_ext = os.path.splitext(exps[0])[1].lstrip(".")
+            try:
+                exp_src = open(exps[0], encoding="utf-8", errors="replace").read()
+            except Exception:
+                exp_src = ""
+        wp = os.path.join(ed, "exploit", "writeup.md")
+        if os.path.exists(wp):
+            try:
+                writeup = open(wp, encoding="utf-8", errors="replace").read()
+            except Exception:
+                writeup = ""
+        exp_facts = {k: exg.get(k) for k in
+                     ("verdict", "rc", "judge_verdict", "final_status",
+                      "expected_flag", "captured_flag")}
     truth = TRUTH.get(conf, "PENDING")
     attr = sub(aud, "attribution")
     tm = sub(aud, "threat_model")
@@ -152,6 +182,10 @@ def load_entry(root, vendor, model, ed):
         "repro_files": rj.get("files") or {},
         "repro_md": repro_md,
         "repro_decisive": decisive,
+        "exploited": exploited,
+        "exp_src": exp_src, "exp_ext": exp_ext,
+        "exp_facts": exp_facts,
+        "writeup": writeup,
     }
 
 def scan(root):
@@ -361,6 +395,15 @@ body.t2 .t1only{display:none!important}
 .card .rp{display:inline-flex;align-items:center;gap:5px;border:1px solid rgba(92,185,140,.35);background:rgba(92,185,140,.08);border-radius:999px;padding:1.5px 8px 1.5px 7px;font:9.5px var(--mono);font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--ok);white-space:nowrap}
 .card .rp::before{content:"";width:0;height:0;border-left:5px solid var(--ok);border-top:3.5px solid transparent;border-bottom:3.5px solid transparent;margin-right:1px}
 .card:hover .rp{background:rgba(92,185,140,.14);border-color:rgba(92,185,140,.5)}
+/* exploited card — a light-green wash over the WHOLE card so a weaponized
+   poc reads at a glance in the tier-2 ledger. Success only (final_status
+   EXPLOITED); failures keep the plain surface. The mix rides --ok so the
+   tint stays coherent in both themes (pale green in light, green-tinted
+   slate in dark). */
+.card.x{background:color-mix(in srgb,var(--ok) 11%,var(--surface));border-color:color-mix(in srgb,var(--ok) 30%,var(--line))}
+.card.x:hover{border-color:color-mix(in srgb,var(--ok) 55%,var(--line))}
+.card .xp{display:inline-flex;align-items:center;gap:5px;border:1px solid color-mix(in srgb,var(--ok) 45%,transparent);background:color-mix(in srgb,var(--ok) 12%,transparent);border-radius:999px;padding:1.5px 8px;font:9.5px var(--mono);font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--ok);white-space:nowrap}
+.card .xp svg{flex:none}
 .card h4{margin:0;font:13px var(--mono);font-weight:650;letter-spacing:-.01em;overflow-wrap:anywhere}
 .card .un{margin-top:-6px;font:11px var(--mono);color:var(--sky);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .card .cve{font:10.5px var(--mono);color:var(--faint);margin-top:-6px}
@@ -508,6 +551,8 @@ pre.qs{margin:0;padding:12px 14px;background:var(--bg);border:1px solid var(--li
     <div class="segs" id="dTabs">
       <button data-t="audit">Evidence audit</button>
       <button data-t="poc">PoC</button>
+      <button data-t="exploit">Exploit</button>
+      <button data-t="writeup">Writeup</button>
       <button data-t="report">Report</button>
       <button data-t="repro">Repro</button>
     </div>
@@ -516,6 +561,8 @@ pre.qs{margin:0;padding:12px 14px;background:var(--bg);border:1px solid var(--li
   <div class="dbody">
     <div class="pane" id="pane-audit"></div>
     <div class="pane" id="pane-poc" hidden></div>
+    <div class="pane" id="pane-exploit" hidden></div>
+    <div class="pane" id="pane-writeup" hidden></div>
     <div class="pane" id="pane-report" hidden></div>
     <div class="pane" id="pane-repro" hidden></div>
   </div>
@@ -676,8 +723,9 @@ function hasRepro(h){return h.truth==="CONFIRMED"&&h.novelty==="0-DAY";}
 function card(h,i){
   const dot = h.truth==="CONFIRMED"?"ok":h.truth==="REJECTED"?"bad":"pend";
   const stTxt = h.truth==="CONFIRMED"?"Confirmed":h.truth==="REJECTED"?"Rejected":"—";
-  return `<article class="card" tabindex="0" data-i="${i}" aria-label="${esc(h.poc)}">
+  return `<article class="card${h.exploited?" x":""}" tabindex="0" data-i="${i}" aria-label="${esc(h.poc)}">
     <div class="ctop"><span class="st"><span class="dot ${dot}"></span>${esc(stTxt)}</span>
+      ${h.exploited?`<span class="xp" title="successfully exploited — the weaponized exp captured a fresh flag on a fresh target (judge LEGITIMATE); Exploit and Writeup tabs in the drawer"><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg>exploited</span>`:""}
       ${hasRepro(h)&&h.repro_state==="done"?`<span class="rp" title="reproduction pack landed — replay video, serial logs and REPRO.md in the Repro tab">repro</span>`:""}
       <span class="nv ${h.novelty==="N-DAY"?"nday":"day"}">${esc(h.novelty)}</span></div>
     <h4>${esc(h.poc)}</h4>
@@ -851,6 +899,18 @@ function openDrawer(i){
     <div class="sec"><h5>Repro — missed-replay (no video)</h5>
       <p>The live replay did not reproduce the vaulted verdict class. Per the integrity rule the video is <b>REFUSED</b> — never rendered from stale evidence. attempts=${esc(h.repro_attempts)} · at=${esc(h.repro_at||"—")}</p></div>`
     : `<div class="sec"><h5>Repro</h5><p class="qs">not replayed yet — repro-run.sh has not landed for this entry.</p></div>`) : "";
+  /* ── Exploit + Writeup panes: the weaponization surface ──
+     exists ONLY for a successful exploitation (exploit/grade-result.json
+     final_status == EXPLOITED — deterministic fresh-flag capture gated by
+     the causal-necessity judge). Failures get no tab, no pane, no tint. */
+  $("#pane-exploit").innerHTML = h.exploited ? `
+    <div class="sec"><h5>Exploit source — the weaponized exp, graded on a fresh target with a fresh flag</h5>
+      ${h.exp_src?`<pre class="qs">${esc(h.exp_src)}</pre>`:`<pre class="qs">exp source not embedded</pre>`}</div>
+    <div class="sec"><h5>Grade facts — exploit/grade-result.json (machine record, not prose)</h5><pre class="qs">${esc(JSON.stringify(h.exp_facts||{},null,1))}</pre></div>` : "";
+  $("#pane-writeup").innerHTML = h.exploited
+    ? `<div class="rpt">${md(h.writeup||"*no writeup landed for this entry*")}</div>` : "";
+  $("#dTabs button[data-t=exploit]").hidden = !h.exploited;
+  $("#dTabs button[data-t=writeup]").hidden = !h.exploited;
   $("#dTabs button[data-t=repro]").hidden = !hasRepro(h);
   switchTab("audit");
   $("#scrim").classList.add("open"); $("#drawer").classList.add("open");
@@ -861,7 +921,7 @@ $("#dClose").onclick=closeDrawer; $("#scrim").onclick=closeDrawer;
 $("#dTabs").onclick=e=>{if(e.target.dataset.t)switchTab(e.target.dataset.t);};
 function switchTab(t){
   $$("#dTabs button").forEach(b=>b.classList.toggle("on",b.dataset.t===t));
-  ["audit","poc","report","repro"].forEach(k=>{$("#pane-"+k).hidden = k!==t;});
+  ["audit","poc","exploit","writeup","report","repro"].forEach(k=>{$("#pane-"+k).hidden = k!==t;});
 }
 
 /* ── live polling ─────────────────────────────────────── */
@@ -951,7 +1011,9 @@ def payload(root):
     hits = scan(root)
     key = json.dumps([[h["path"], h["report_state"], h["truth"], h["novelty"],
                       h["conf"], h["flow"], len(h["report"]), len(h["poc_src"]),
-                      h.get("repro_state"), len(h.get("repro_md") or "")] for h in hits])
+                      h.get("repro_state"), len(h.get("repro_md") or ""),
+                      h.get("exploited"), len(h.get("exp_src") or ""),
+                      len(h.get("writeup") or "")] for h in hits])
     return hits, hashlib.md5(key.encode()).hexdigest()
 
 def build_page(hits, ts):

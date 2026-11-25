@@ -264,6 +264,11 @@ data/round/<vendor>/<model>/<poc-stem>-<graded-ts>/
   REPORT.md + AUDIT.json        static-only report agent output; the
                                 archiver extends AUDIT.json with the
                                 deterministic finality + derived confidence
+  exploit/                      the weaponization attempt (exploit stage):
+                                exp source + grade-result.json + writeup.md
+                                + evidence/; final_status EXPLOITED marks a
+                                successful exploitation (the dashboard shows
+                                only those)
   exploit/                      stage-3 archive: exp (on EXPLOITED) +
                                 writeup.md + grade-result.json + evidence/
 
@@ -290,16 +295,23 @@ one card per model — status ratio ring with the total in the hub, paired
 count); tier 2 = that model's hit ledger (search + listbox filters
 Novelty/Status/Attribution/Class; cards carry status dot, class, flow
 chip direct/cross, novelty with unverified-CVE flag, TOKEN/WINDOW,
-marker, graded date). The right drawer holds a meta grid (verdict ·
-finality · status · confidence · novelty · marker · class · flow ·
-graded) and tabs *Evidence audit · PoC · Report · Repro* — the entry's
-full REPORT.md, AUDIT.json dimensions and exact poc bytes embedded; the
-Repro tab (CONFIRMED ∩ 0-DAY entries only) plays the live-replay video
-inline with a download link (bytes + sha256 shown), the repro.json
-machine facts, the decisive serial lines verbatim, the full downloadable
-attachment manifest and the rendered REPRO.md. Status is CONFIRMED /
-REJECTED only: high|medium ⇒ CONFIRMED, low ⇒ REJECTED (confidence
-grades the attribution chain, never reality).
+marker, graded date; a successfully exploited entry washes the WHOLE
+card light green and carries an EXPLOITED pill). The right drawer holds
+a meta grid (verdict · finality · status · confidence · novelty ·
+marker · class · flow · graded) and tabs *Evidence audit · PoC ·
+Exploit · Writeup · Report · Repro* — the entry's full REPORT.md,
+AUDIT.json dimensions and exact poc bytes embedded. The Exploit and
+Writeup tabs exist ONLY for successful exploitations
+(`exploit/grade-result.json` `final_status == EXPLOITED` — the
+deterministic fresh-target/fresh-flag capture gated by the
+causal-necessity judge; failed attempts get no tab, no pane, no card
+tint): the weaponized exp source + the grade machine facts, and the
+rendered exploit writeup. The Repro tab (CONFIRMED ∩ 0-DAY entries
+only) plays the live-replay video inline with a download link (bytes +
+sha256 shown), the repro.json machine facts, the decisive serial lines
+verbatim, the full downloadable attachment manifest and the rendered
+REPRO.md. Status is CONFIRMED / REJECTED only: high|medium ⇒ CONFIRMED,
+low ⇒ REJECTED (confidence grades the attribution chain, never reality).
 
 Plain run rebuilds `<root>/dashboard.html` atomically (snapshot — re-run
 after new hits); `--serve PORT` serves it LIVE: every request rescans
