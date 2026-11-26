@@ -108,20 +108,23 @@ def load_entry(root, vendor, model, ed):
             decisive = open(dp, encoding="utf-8", errors="replace").read()[:8192]
         except Exception:
             decisive = ""
-    # exploit dimension (exploit-run.sh): success = final_status EXPLOITED —
-    # the deterministic fresh-target/fresh-flag capture gated by the
-    # causal-necessity judge (ILLEGITIMATE downgrades to EXPLOITED_ILLEGITIMATE;
-    # NOT_EXPLOITED / BOOT_FAILED are failures). Only successes get a surface:
-    # no tab, no pane, no card tint for anything else.
+    # exploit dimension (exploit-run.sh): two CAPTURED states get a surface —
+    # EXPLOITED (clean: fresh-target/fresh-flag capture, judge LEGITIMATE) and
+    # EXPLOITED_ILLEGITIMATE (the flag WAS captured, but the causal-necessity
+    # judge found a DIFFERENT vulnerability was used — a distinct yellow
+    # state). NOT_EXPLOITED / BOOT_FAILED are failures: no tab, no pane,
+    # no card tint.
     exg = {}
     try:
         exg = json.load(open(os.path.join(ed, "exploit", "grade-result.json")))
     except Exception:
         exg = {}
     exg = exg if isinstance(exg, dict) else {}
-    exploited = exg.get("final_status") == "EXPLOITED"
+    fst = exg.get("final_status")
+    exploited = fst == "EXPLOITED"
+    exp_illegit = fst == "EXPLOITED_ILLEGITIMATE"
     exp_src, exp_ext, writeup, exp_facts = "", "", "", {}
-    if exploited:
+    if exploited or exp_illegit:
         exps = sorted(glob.glob(os.path.join(ed, "exploit", "exp.*")))
         if exps:
             exp_ext = os.path.splitext(exps[0])[1].lstrip(".")
@@ -183,6 +186,7 @@ def load_entry(root, vendor, model, ed):
         "repro_md": repro_md,
         "repro_decisive": decisive,
         "exploited": exploited,
+        "exp_illegit": exp_illegit,
         "exp_src": exp_src, "exp_ext": exp_ext,
         "exp_facts": exp_facts,
         "writeup": writeup,
@@ -228,6 +232,7 @@ TEMPLATE = r"""
   --ink:#dce3ee; --mut:#8f9bb0; --faint:#5c6779;
   --accent:#d9a441; --accent-soft:rgba(217,164,65,.14);
   --ok:#5cb98c; --bad:#d2566b; --pend:#7d8aa0; --sky:#6d9fd4; --violet:#a08fe0;
+  --warn:#e0c24a;
   --shadow:0 14px 34px rgba(0,0,0,.38);
   --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
   --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
@@ -240,6 +245,7 @@ TEMPLATE = r"""
     --ink:#1a2330; --mut:#5a6679; --faint:#8b95a7;
     --accent:#8a6110; --accent-soft:rgba(138,97,16,.12);
     --ok:#1e7a4d; --bad:#b23a52; --pend:#667185; --sky:#33689f; --violet:#5c48b5;
+    --warn:#8f7510;
     --shadow:0 14px 34px rgba(30,42,64,.14);
     color-scheme:light;
   }
@@ -404,6 +410,15 @@ body.t2 .t1only{display:none!important}
 .card.x:hover{border-color:color-mix(in srgb,var(--ok) 55%,var(--line))}
 .card .xp{display:inline-flex;align-items:center;gap:5px;border:1px solid color-mix(in srgb,var(--ok) 45%,transparent);background:color-mix(in srgb,var(--ok) 12%,transparent);border-radius:999px;padding:1.5px 8px;font:9.5px var(--mono);font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--ok);white-space:nowrap}
 .card .xp svg{flex:none}
+/* illegitimate capture — the flag WAS taken, but the judge found a different
+   vulnerability was used: the same whole-card wash in pale YELLOW, a state
+   distinct from the green clean success */
+.card.xi{background:color-mix(in srgb,var(--warn) 12%,var(--surface));border-color:color-mix(in srgb,var(--warn) 32%,var(--line))}
+.card.xi:hover{border-color:color-mix(in srgb,var(--warn) 55%,var(--line))}
+.card .xpi{display:inline-flex;align-items:center;gap:5px;border:1px solid color-mix(in srgb,var(--warn) 45%,transparent);background:color-mix(in srgb,var(--warn) 12%,transparent);border-radius:999px;padding:1.5px 8px;font:9.5px var(--mono);font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--warn);white-space:nowrap}
+.card .xpi svg{flex:none}
+.warnbox{display:flex;gap:9px;align-items:center;background:color-mix(in srgb,var(--warn) 10%,transparent);border:1px solid color-mix(in srgb,var(--warn) 38%,transparent);color:var(--warn);border-radius:9px;padding:8px 12px;font-size:12px;margin-bottom:14px}
+.warnbox svg{flex:none}
 .card h4{margin:0;font:13px var(--mono);font-weight:650;letter-spacing:-.01em;overflow-wrap:anywhere}
 .card .un{margin-top:-6px;font:11px var(--mono);color:var(--sky);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .card .cve{font:10.5px var(--mono);color:var(--faint);margin-top:-6px}
@@ -726,9 +741,9 @@ function hasRepro(h){return h.truth==="CONFIRMED"&&h.novelty==="0-DAY";}
 function card(h,i){
   const dot = h.truth==="CONFIRMED"?"ok":h.truth==="REJECTED"?"bad":"pend";
   const stTxt = h.truth==="CONFIRMED"?"Confirmed":h.truth==="REJECTED"?"Rejected":"—";
-  return `<article class="card${h.exploited?" x":""}" tabindex="0" data-i="${i}" aria-label="${esc(h.poc)}">
+  return `<article class="card${h.exploited?" x":h.exp_illegit?" xi":""}" tabindex="0" data-i="${i}" aria-label="${esc(h.poc)}">
     <div class="ctop"><span class="st"><span class="dot ${dot}"></span>${esc(stTxt)}</span>
-      ${h.exploited?`<span class="xp" title="successfully exploited — the weaponized exp captured a fresh flag on a fresh target (judge LEGITIMATE); Exploit and Writeup tabs in the drawer"><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg>exploited</span>`:""}
+      ${h.exploited?`<span class="xp" title="successfully exploited — the weaponized exp captured a fresh flag on a fresh target (judge LEGITIMATE); Exploit and Writeup tabs in the drawer"><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg>exploited</span>`:h.exp_illegit?`<span class="xpi" title="flag captured, but the causal-necessity judge ruled ILLEGITIMATE — the exploitation used a DIFFERENT vulnerability, not the vaulted one"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v4"/><path d="M12 17.4v.6"/></svg>illegitimate</span>`:""}
       ${hasRepro(h)&&h.repro_state==="done"?`<span class="rp" title="reproduction pack landed — replay video, serial logs and REPRO.md in the Repro tab">repro</span>`:""}
       <span class="nv ${h.novelty==="N-DAY"?"nday":"day"}">${esc(h.novelty)}</span></div>
     <h4>${esc(h.poc)}</h4>
@@ -903,17 +918,20 @@ function openDrawer(i){
       <p>The live replay did not reproduce the vaulted verdict class. Per the integrity rule the video is <b>REFUSED</b> — never rendered from stale evidence. attempts=${esc(h.repro_attempts)} · at=${esc(h.repro_at||"—")}</p></div>`
     : `<div class="sec"><h5>Repro</h5><p class="qs">not replayed yet — repro-run.sh has not landed for this entry.</p></div>`) : "";
   /* ── Exploit + Writeup panes: the weaponization surface ──
-     exists ONLY for a successful exploitation (exploit/grade-result.json
-     final_status == EXPLOITED — deterministic fresh-flag capture gated by
-     the causal-necessity judge). Failures get no tab, no pane, no tint. */
-  $("#pane-exploit").innerHTML = h.exploited ? `
+     exists for both CAPTURED states (exploit/grade-result.json final_status):
+     EXPLOITED (clean, green) and EXPLOITED_ILLEGITIMATE (flag taken via a
+     DIFFERENT vulnerability, yellow + a judge banner). Pure failures
+     (NOT_EXPLOITED / BOOT_FAILED) get no tab, no pane, no tint. */
+  const hasExp = h.exploited || h.exp_illegit;
+  $("#pane-exploit").innerHTML = hasExp ? `
+    ${h.exp_illegit?`<div class="warnbox"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v4"/><path d="M12 17.4v.6"/></svg><span>Flag captured, but the judge ruled ILLEGITIMATE — the exploitation used a DIFFERENT vulnerability, not the vaulted one.</span></div>`:""}
     <div class="sec"><h5>Exploit source — the weaponized exp, graded on a fresh target with a fresh flag</h5>
       ${h.exp_src?`<pre class="qs">${esc(h.exp_src)}</pre>`:`<pre class="qs">exp source not embedded</pre>`}</div>
     <div class="sec"><h5>Grade facts — exploit/grade-result.json (machine record, not prose)</h5><pre class="qs">${esc(JSON.stringify(h.exp_facts||{},null,1))}</pre></div>` : "";
-  $("#pane-writeup").innerHTML = h.exploited
+  $("#pane-writeup").innerHTML = hasExp
     ? `<div class="rpt">${md(h.writeup||"*no writeup landed for this entry*")}</div>` : "";
-  $("#dTabs button[data-t=exploit]").hidden = !h.exploited;
-  $("#dTabs button[data-t=writeup]").hidden = !h.exploited;
+  $("#dTabs button[data-t=exploit]").hidden = !hasExp;
+  $("#dTabs button[data-t=writeup]").hidden = !hasExp;
   $("#dTabs button[data-t=repro]").hidden = !hasRepro(h);
   switchTab("audit");
   $("#scrim").classList.add("open"); $("#drawer").classList.add("open");
@@ -1015,7 +1033,8 @@ def payload(root):
     key = json.dumps([[h["path"], h["report_state"], h["truth"], h["novelty"],
                       h["conf"], h["flow"], len(h["report"]), len(h["poc_src"]),
                       h.get("repro_state"), len(h.get("repro_md") or ""),
-                      h.get("exploited"), len(h.get("exp_src") or ""),
+                      h.get("exploited"), h.get("exp_illegit"),
+                      len(h.get("exp_src") or ""),
                       len(h.get("writeup") or "")] for h in hits])
     return hits, hashlib.md5(key.encode()).hexdigest()
 

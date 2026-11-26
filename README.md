@@ -266,9 +266,11 @@ data/round/<vendor>/<model>/<poc-stem>-<graded-ts>/
                                 deterministic finality + derived confidence
   exploit/                      the weaponization attempt (exploit stage):
                                 exp source + grade-result.json + writeup.md
-                                + evidence/; final_status EXPLOITED marks a
-                                successful exploitation (the dashboard shows
-                                only those)
+                                + evidence/; final_status tells EXPLOITED
+                                (clean capture) from EXPLOITED_ILLEGITIMATE
+                                (captured via a different vulnerability) —
+                                the dashboard shows both; pure failures get
+                                no surface
   exploit/                      stage-3 archive: exp (on EXPLOITED) +
                                 writeup.md + grade-result.json + evidence/
 
@@ -296,17 +298,22 @@ count); tier 2 = that model's hit ledger (search + listbox filters
 Novelty/Status/Attribution/Class; cards carry status dot, class, flow
 chip direct/cross, novelty with unverified-CVE flag, TOKEN/WINDOW,
 marker, graded date; a successfully exploited entry washes the WHOLE
-card light green and carries an EXPLOITED pill). The right drawer holds
+card light green and carries an EXPLOITED pill, while an
+EXPLOITED_ILLEGITIMATE entry — flag captured, but the judge found a
+DIFFERENT vulnerability was used — washes light yellow with an
+ILLEGITIMATE pill). The right drawer holds
 a meta grid (verdict · finality · status · confidence · novelty ·
 marker · class · flow · graded) and tabs *Evidence audit · PoC ·
 Exploit · Writeup · Report · Repro* — the entry's full REPORT.md,
 AUDIT.json dimensions and exact poc bytes embedded. The Exploit and
-Writeup tabs exist ONLY for successful exploitations
-(`exploit/grade-result.json` `final_status == EXPLOITED` — the
-deterministic fresh-target/fresh-flag capture gated by the
-causal-necessity judge; failed attempts get no tab, no pane, no card
-tint): the weaponized exp source + the grade machine facts, and the
-rendered exploit writeup. The Repro tab (CONFIRMED ∩ 0-DAY entries
+Writeup tabs exist for both CAPTURED states (`exploit/grade-result.json`
+`final_status`): EXPLOITED — the deterministic fresh-target/fresh-flag
+capture gated by the causal-necessity judge — and EXPLOITED_ILLEGITIMATE
+(the flag was taken, but a different vulnerability did the work; the
+Exploit pane opens with a judge banner). Pure failures (NOT_EXPLOITED /
+BOOT_FAILED) get no tab, no pane, no card tint. The tabs show the
+weaponized exp source + the grade machine facts, and the rendered
+exploit writeup. The Repro tab (CONFIRMED ∩ 0-DAY entries
 only) plays the live-replay video inline with a download link (bytes +
 sha256 shown), the repro.json machine facts, the decisive serial lines
 verbatim, the full downloadable attachment manifest and the rendered
