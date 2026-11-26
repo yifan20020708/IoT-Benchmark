@@ -1366,7 +1366,14 @@ def serve(root, port, org, password):
             time.sleep(0.4)   # fixed cost on failure — slows guessing, locks no one out
             self._send(200, "text/html; charset=utf-8",
                        login_page(error=True, org_value=org_f, next_path=nxt))
-    srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    class Server(ThreadingHTTPServer):
+        def handle_error(self, request, client_address):
+            # client-side resets / broken pipes are normal disconnect noise,
+            # not server faults — keep the log for real errors only
+            if isinstance(sys.exc_info()[1], (ConnectionResetError, BrokenPipeError)):
+                return
+            super().handle_error(request, client_address)
+    srv = Server(("0.0.0.0", port), Handler)
     print(f"[round-view] LIVE serve http://0.0.0.0:{port}/dashboard.html "
           f"(root {root}; rescans per request, page polls every 4s; "
           f"login gate: organization '{org}')", file=sys.stderr)
