@@ -123,7 +123,7 @@ def load_entry(root, vendor, model, ed):
     fst = exg.get("final_status")
     exploited = fst == "EXPLOITED"
     exp_illegit = fst == "EXPLOITED_ILLEGITIMATE"
-    exp_src, exp_ext, writeup, exp_facts = "", "", "", {}
+    exp_src, exp_ext, writeup, exp_facts, judge = "", "", "", {}, {}
     if exploited or exp_illegit:
         exps = sorted(glob.glob(os.path.join(ed, "exploit", "exp.*")))
         if exps:
@@ -141,6 +141,11 @@ def load_entry(root, vendor, model, ed):
         exp_facts = {k: exg.get(k) for k in
                      ("verdict", "rc", "judge_verdict", "final_status",
                       "expected_flag", "captured_flag")}
+        try:
+            jj = json.load(open(os.path.join(ed, "exploit", "judge.json")))
+        except Exception:
+            jj = {}
+        judge = jj if isinstance(jj, dict) else {}
     truth = TRUTH.get(conf, "PENDING")
     attr = sub(aud, "attribution")
     tm = sub(aud, "threat_model")
@@ -189,6 +194,7 @@ def load_entry(root, vendor, model, ed):
         "exp_illegit": exp_illegit,
         "exp_src": exp_src, "exp_ext": exp_ext,
         "exp_facts": exp_facts,
+        "judge": judge,
         "writeup": writeup,
     }
 
@@ -863,6 +869,30 @@ function renderTier2(){
 /* ── drawer ───────────────────────────────────────────── */
 function dimCard(title, badge, ev){
   return `<div class="dim"><h4>${esc(title)} <b>${badge||""}</b></h4><p>${esc(ev||"—")}</p></div>`;}
+/* proper HTML escape for judge prose (dimCard inserts ev verbatim) */
+function hesc(s){return esc(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+const CHECK_LABELS={flag_by_path_not_value:"flag read by path, not value",
+  no_hardcoded_flag:"no hardcoded flag",no_offline_disk_read:"no offline disk read",
+  no_backdoor:"no backdoor",no_host_secret_or_docker:"no host secret / docker",
+  no_fabricated_output:"no fabricated output"};
+/* judge.json parsed into evidence-audit-style dimension cards */
+function judgeSection(jj){
+  if(!jj||!Object.keys(jj).length)return "";
+  const cn=jj.causal_necessity||{}, ch=jj.cheating||{}, jm=jj.judge||{};
+  const yn=(v,good)=>v===true?`<b class="${good?"okk":"badd"}">yes</b>`:v===false?`<b class="${good?"badd":"okk"}">no</b>`:"<b>—</b>";
+  const vb=jj.verdict==="LEGITIMATE"?`<span style="color:var(--ok)">LEGITIMATE</span>`:jj.verdict==="ILLEGITIMATE"?`<span style="color:var(--warn)">ILLEGITIMATE</span>`:"—";
+  const checks=Object.entries(ch.checks||{}).map(([k,v])=>`<span style="display:block">${v===true?'<b class="okk">✓</b>':v===false?'<b class="badd">✗</b>':'<b>—</b>'} ${hesc(CHECK_LABELS[k]||k)}</span>`).join("");
+  const flags=(ch.flags||[]).length?`<span style="display:block;color:var(--bad)">flags: ${hesc(ch.flags.join("; "))}</span>`:"";
+  const fo=jj.judge_ok===false?` · <span style="color:var(--bad)">FAIL-OPEN (no verdict rendered — the deterministic capture stands)</span>`:"";
+  return `<div class="sec"><h5>Causal-necessity judge — judge.json (${hesc(jm.model||"?")} · ${hesc(jm.effort||"?")} · ${hesc((jm.judged_at||"").slice(0,10))}${fo})</h5>
+    <div class="dimgrid">
+      ${dimCard("Verdict",`${vb} <span style="color:var(--mut)">· conf ${hesc(jj.confidence||"—")}</span>`,hesc(jj.summary||jj.error||""))}
+      ${dimCard("Causal necessity",`from PoC ${yn(cn.starts_from_poc,true)} · same vuln ${yn(cn.same_vulnerability,true)} · unrelated ${yn(cn.uses_unrelated_path,false)}`,hesc(cn.reasoning||""))}
+      ${dimCard("Anti-cheat",ch.detected===true?'<b class="badd">DETECTED</b>':ch.detected===false?'<b class="okk">clean</b>':"—",checks+flags+(ch.reasoning?`<span style="display:block;margin-top:6px">${hesc(ch.reasoning)}</span>`:""))}
+      ${dimCard("PoC primitive","",hesc(cn.poc_primitive||""))}
+      ${dimCard("Exp primitive","",hesc(cn.exp_primitive||""))}
+    </div></div>`;
+}
 function yes(v){return v===true?`<b class="okk">yes</b>`:v===false?`<b class="badd">no</b>`:`<b>—</b>`;}
 function openDrawer(i){
   const h=H[i];
@@ -925,6 +955,7 @@ function openDrawer(i){
   const hasExp = h.exploited || h.exp_illegit;
   $("#pane-exploit").innerHTML = hasExp ? `
     ${h.exp_illegit?`<div class="warnbox"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v4"/><path d="M12 17.4v.6"/></svg><span>Flag captured, but the judge ruled ILLEGITIMATE — the exploitation used a DIFFERENT vulnerability, not the vaulted one.</span></div>`:""}
+    ${judgeSection(h.judge)}
     <div class="sec"><h5>Exploit source — the weaponized exp, graded on a fresh target with a fresh flag</h5>
       ${h.exp_src?`<pre class="qs">${esc(h.exp_src)}</pre>`:`<pre class="qs">exp source not embedded</pre>`}</div>
     <div class="sec"><h5>Grade facts — exploit/grade-result.json (machine record, not prose)</h5><pre class="qs">${esc(JSON.stringify(h.exp_facts||{},null,1))}</pre></div>` : "";
@@ -1035,7 +1066,9 @@ def payload(root):
                       h.get("repro_state"), len(h.get("repro_md") or ""),
                       h.get("exploited"), h.get("exp_illegit"),
                       len(h.get("exp_src") or ""),
-                      len(h.get("writeup") or "")] for h in hits])
+                      len(h.get("writeup") or ""),
+                      len(json.dumps(h.get("judge") or {}, sort_keys=True))]
+                     for h in hits])
     return hits, hashlib.md5(key.encode()).hexdigest()
 
 def build_page(hits, ts):

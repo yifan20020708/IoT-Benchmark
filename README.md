@@ -313,7 +313,10 @@ capture gated by the causal-necessity judge — and EXPLOITED_ILLEGITIMATE
 Exploit pane opens with a judge banner). Pure failures (NOT_EXPLOITED /
 BOOT_FAILED) get no tab, no pane, no card tint. The tabs show the
 weaponized exp source + the grade machine facts, and the rendered
-exploit writeup. The Repro tab (CONFIRMED ∩ 0-DAY entries
+exploit writeup; the Exploit pane also parses `judge.json` into
+evidence-audit-style dimension cards (verdict + confidence, causal
+necessity, the six anti-cheat checks, PoC/exp primitives), with a
+FAIL-OPEN marker when the judge rendered no verdict. The Repro tab (CONFIRMED ∩ 0-DAY entries
 only) plays the live-replay video inline with a download link (bytes +
 sha256 shown), the repro.json machine facts, the decisive serial lines
 verbatim, the full downloadable attachment manifest and the rendered
